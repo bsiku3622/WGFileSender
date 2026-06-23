@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+macos/.build/
+macos/*.app/
+macos/*.xcodeproj/
+*.icns
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.apk
+*.aab
+
+# Misc
+*.log

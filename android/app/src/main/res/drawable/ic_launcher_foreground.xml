@@ -1,0 +1,12 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- up arrow (send) — enlarged to match the macOS icon -->
+    <path android:fillColor="#FFFFFF" android:pathData="M29,48 L53,48 L41,30 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M37,47 L45,47 L45,78 L37,78 Z" />
+    <!-- down arrow (receive) -->
+    <path android:fillColor="#C7D2FE" android:pathData="M55,60 L79,60 L67,78 Z" />
+    <path android:fillColor="#C7D2FE" android:pathData="M63,30 L71,30 L71,61 L63,61 Z" />
+</vector>
