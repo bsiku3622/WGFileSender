@@ -7,6 +7,10 @@
 **Peer-to-peer file transfer between your own devices over a WireGuard tunnel.**
 No relay server, no cloud — each device talks directly to the others on the VPN.
 
+<br />
+
+<img src="docs/screenshot-macos.png" width="720" alt="WGFileSender on macOS" />
+
 </div>
 
 ---
