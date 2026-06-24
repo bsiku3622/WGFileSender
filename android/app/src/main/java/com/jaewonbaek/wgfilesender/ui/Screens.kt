@@ -1,5 +1,8 @@
 package com.jaewonbaek.wgfilesender.ui
 
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -113,13 +116,16 @@ private fun DevicesScreen(controller: AppController) {
     var renaming by remember { mutableStateOf<PeerDevice?>(null) }
     var pickerPeer by remember { mutableStateOf<PeerDevice?>(null) }
 
-    // GetMultipleContents → ACTION_GET_CONTENT: shows an app chooser (Photos, Files, …)
-    // and supports selecting multiple items.
+    // Explicit chooser so an app-picker (Photos, Gallery, Files, …) always appears;
+    // EXTRA_ALLOW_MULTIPLE keeps multi-select.
     val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetMultipleContents()
-    ) { uris ->
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
         val peer = pickerPeer
-        if (peer != null && uris.isNotEmpty()) controller.sendFiles(uris, peer)
+        if (peer != null && result.resultCode == Activity.RESULT_OK) {
+            val uris = extractUris(result.data)
+            if (uris.isNotEmpty()) controller.sendFiles(uris, peer)
+        }
         pickerPeer = null
     }
 
@@ -148,7 +154,15 @@ private fun DevicesScreen(controller: AppController) {
                         peer = peer,
                         onSend = {
                             if (shared.isNotEmpty()) controller.sendFiles(shared, peer)
-                            else { pickerPeer = peer; filePicker.launch("*/*") }
+                            else {
+                                pickerPeer = peer
+                                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                    type = "*/*"
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                                }
+                                filePicker.launch(Intent.createChooser(intent, null))
+                            }
                         },
                         onRename = { renaming = peer },
                         onRemove = { controller.removePeer(peer) }
@@ -407,6 +421,15 @@ private fun EmptyState(icon: ImageVector, title: String, body: String) {
         Text(body, color = Shad.mutedForeground, fontSize = 13.sp, textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp))
     }
+}
+
+/** Pulls selected uris from a chooser result (multiple via clipData, single via data). */
+private fun extractUris(data: Intent?): List<Uri> {
+    if (data == null) return emptyList()
+    val out = mutableListOf<Uri>()
+    data.clipData?.let { clip -> for (i in 0 until clip.itemCount) out.add(clip.getItemAt(i).uri) }
+    if (out.isEmpty()) data.data?.let { out.add(it) }
+    return out
 }
 
 private const val DEFAULT_PORT_TEXT = "51900"
