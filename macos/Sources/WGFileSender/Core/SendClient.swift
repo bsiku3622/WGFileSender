@@ -82,10 +82,10 @@ final class SendClient {
         req.setValue(hash, forHTTPHeaderField: "X-WGFS-Sha256")
         req.setValue(transferId, forHTTPHeaderField: "X-WGFS-Transfer-Id")
 
+        // Pass the progress delegate per-call (not as a session-level delegate, which
+        // deadlocks the async upload variant).
         let delegate = UploadProgressDelegate(total: size, onProgress: progress)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        let (_, resp) = try await session.upload(for: req, fromFile: fileURL)
+        let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: fileURL, delegate: delegate)
         try check(resp, expect: 200)
     }
 

@@ -7,6 +7,7 @@ struct Store {
     private let identityURL: URL
     private let peersURL: URL
     private let settingsURL: URL
+    private let transfersURL: URL
 
     struct Settings: Codable {
         var downloadRoot: String
@@ -20,6 +21,7 @@ struct Store {
         identityURL = dir.appendingPathComponent("identity.json")
         peersURL = dir.appendingPathComponent("peers.json")
         settingsURL = dir.appendingPathComponent("settings.json")
+        transfersURL = dir.appendingPathComponent("transfers.json")
     }
 
     // MARK: Identity
@@ -63,6 +65,17 @@ struct Store {
     }
 
     func save(settings: Settings) { write(settings, to: settingsURL) }
+
+    // MARK: Transfers (finished history only)
+
+    func loadTransfers() -> [Transfer] {
+        guard let data = try? Data(contentsOf: transfersURL),
+              let items = try? JSONDecoder().decode([Transfer].self, from: data)
+        else { return [] }
+        return items
+    }
+
+    func save(transfers: [Transfer]) { write(transfers, to: transfersURL) }
 
     // MARK: helper
 

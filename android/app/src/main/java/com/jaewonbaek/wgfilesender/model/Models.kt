@@ -73,9 +73,13 @@ data class Settings(
     val port: Int = DEFAULT_PORT
 )
 
+@Serializable
 enum class TransferDirection { INCOMING, OUTGOING }
+
+@Serializable
 enum class TransferState { ACTIVE, COMPLETED, FAILED }
 
+@Serializable
 data class Transfer(
     val id: String,
     val direction: TransferDirection,

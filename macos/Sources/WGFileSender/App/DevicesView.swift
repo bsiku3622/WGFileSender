@@ -8,6 +8,7 @@ struct DevicesView: View {
 
     @State private var showAdd = false
     @State private var importPeer: PeerDevice?
+    @State private var showImporter = false
     @State private var renaming: PeerDevice?
 
     var body: some View {
@@ -20,7 +21,7 @@ struct DevicesView: View {
                 List {
                     ForEach(state.peers) { peer in
                         PeerRow(peer: peer,
-                                onSend: { importPeer = peer },
+                                onSend: { importPeer = peer; showImporter = true },
                                 onRename: { renaming = peer },
                                 onRemove: { state.removePeer(peer) })
                             .dropDestination(for: URL.self) { urls, _ in
@@ -36,7 +37,7 @@ struct DevicesView: View {
         .sheet(item: $state.outgoingPairing) { _ in OutgoingPairSheet() }
         .sheet(item: $renaming) { peer in RenameSheet(peer: peer) }
         .fileImporter(
-            isPresented: Binding(get: { importPeer != nil }, set: { if !$0 { importPeer = nil } }),
+            isPresented: $showImporter,
             allowedContentTypes: [.item], allowsMultipleSelection: true
         ) { result in
             if case .success(let urls) = result, let peer = importPeer {

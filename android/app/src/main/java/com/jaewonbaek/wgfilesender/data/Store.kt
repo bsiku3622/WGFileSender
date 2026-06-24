@@ -5,6 +5,7 @@ import android.os.Build
 import com.jaewonbaek.wgfilesender.model.Identity
 import com.jaewonbaek.wgfilesender.model.PeerDevice
 import com.jaewonbaek.wgfilesender.model.Settings
+import com.jaewonbaek.wgfilesender.model.Transfer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -49,5 +50,14 @@ class Store(context: Context) {
 
     fun saveLanguage(name: String) {
         prefs.edit().putString("appLanguage", name).apply()
+    }
+
+    fun loadTransfers(): List<Transfer> {
+        val raw = prefs.getString("transfers", null) ?: return emptyList()
+        return runCatching { json.decodeFromString<List<Transfer>>(raw) }.getOrDefault(emptyList())
+    }
+
+    fun saveTransfers(transfers: List<Transfer>) {
+        prefs.edit().putString("transfers", json.encodeToString(transfers)).apply()
     }
 }

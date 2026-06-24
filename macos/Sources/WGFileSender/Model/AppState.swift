@@ -10,6 +10,7 @@ final class AppState: ObservableObject {
     @Published var listenerError: String?
     @Published var pendingPairing: PendingPairing?     // incoming request awaiting accept
     @Published var outgoingPairing: OutgoingPairing?   // our initiated pairing, in progress
+    @Published var selectedTab = 0   // 0 Devices · 1 Transfers · 2 Settings
 
     private let store = Store()
     private let config: SharedConfig
@@ -41,6 +42,7 @@ final class AppState: ObservableObject {
         identity = id
         peers = loadedPeers
         settings = loadedSettings
+        transfers = store.loadTransfers()
         config = SharedConfig(identity: id, peers: loadedPeers, settings: loadedSettings)
         sendClient = SendClient(config: config)
         try? FileManager.default.createDirectory(atPath: loadedSettings.downloadRoot,
@@ -137,6 +139,7 @@ final class AppState: ObservableObject {
     // MARK: sending
 
     func sendFiles(_ urls: [URL], to peer: PeerDevice) {
+        if !urls.isEmpty { selectedTab = 1 }   // jump to Transfers
         for url in urls {
             let transferId = UUID().uuidString
             let t = Transfer(id: transferId, direction: .outgoing, peerName: peer.displayName,
@@ -223,10 +226,17 @@ final class AppState: ObservableObject {
         transfers[i].state = state
         transfers[i].error = error
         if state == .completed { transfers[i].transferredBytes = transfers[i].totalBytes }
+        persistTransfers()
     }
 
     func clearFinishedTransfers() {
         transfers.removeAll { $0.state != .active }
+        persistTransfers()
+    }
+
+    /// Persist finished transfers only; in-flight ones are gone after a restart anyway.
+    private func persistTransfers() {
+        store.save(transfers: transfers.filter { $0.state != .active })
     }
 
     // MARK: helpers

@@ -38,7 +38,8 @@ class AppController(private val context: Context) : ListenerEvents {
     val identity = MutableStateFlow(store.loadIdentity())
     val peers = MutableStateFlow(store.loadPeers())
     val settings = MutableStateFlow(store.loadSettings())
-    val transfers = MutableStateFlow<List<Transfer>>(emptyList())
+    val transfers = MutableStateFlow(store.loadTransfers())
+    val selectedTab = MutableStateFlow(0)   // 0 Devices · 1 Transfers · 2 Settings
     val pendingPairing = MutableStateFlow<PendingPairing?>(null)
     val outgoingPairing = MutableStateFlow<OutgoingPairing?>(null)
     val listenerRunning = MutableStateFlow(false)
@@ -136,7 +137,10 @@ class AppController(private val context: Context) : ListenerEvents {
 
     // MARK: sending
 
+    fun setTab(index: Int) { selectedTab.value = index }
+
     fun sendFiles(uris: List<Uri>, peer: PeerDevice) {
+        if (uris.isNotEmpty()) selectedTab.value = 1   // jump to Transfers
         for (uri in uris) {
             val meta = UriUtil.metadata(context, uri)
             val transferId = UUID.randomUUID().toString()
@@ -229,10 +233,17 @@ class AppController(private val context: Context) : ListenerEvents {
             else it.copy(state = state, error = error,
                 transferredBytes = if (state == TransferState.COMPLETED) it.totalBytes else it.transferredBytes)
         }
+        persistTransfers()
     }
 
     fun clearFinished() {
         transfers.value = transfers.value.filter { it.state == TransferState.ACTIVE }
+        persistTransfers()
+    }
+
+    /** Persist finished transfers only; in-flight ones are gone after a restart anyway. */
+    private fun persistTransfers() {
+        store.saveTransfers(transfers.value.filter { it.state != TransferState.ACTIVE })
     }
 
     val downloadFolderSet: Boolean get() = settings.value.downloadTreeUri != null

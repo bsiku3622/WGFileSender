@@ -74,7 +74,7 @@ fun AppScreen(controller: AppController) {
     val lang by controller.language.collectAsState()
     val pending by controller.pendingPairing.collectAsState()
     val outgoing by controller.outgoingPairing.collectAsState()
-    var tab by remember { mutableIntStateOf(0) }
+    val tab by controller.selectedTab.collectAsState()
 
     CompositionLocalProvider(LocalLang provides lang) {
         Surface(color = Shad.background, modifier = Modifier.fillMaxSize()) {
@@ -87,7 +87,7 @@ fun AppScreen(controller: AppController) {
                 Text("WGFileSender",
                     fontSize = 22.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 12.dp, bottom = 14.dp))
-                ShadTabs(listOf(t(S.devices), t(S.transfers), t(S.settings)), tab, { tab = it })
+                ShadTabs(listOf(t(S.devices), t(S.transfers), t(S.settings)), tab, { controller.setTab(it) })
                 Spacer(Modifier.height(14.dp))
                 when (tab) {
                     0 -> DevicesScreen(controller)
