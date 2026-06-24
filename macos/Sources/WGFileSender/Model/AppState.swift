@@ -139,26 +139,68 @@ final class AppState: ObservableObject {
 
     // MARK: sending
 
+    /// Caps concurrent uploads (URLSession per-host limit / receiver load).
+    private let sendLimiter = ConcurrencyLimiter(4)
+    private var activeSendTasks: [String: Task<Void, Never>] = [:]
+
     func sendFiles(_ urls: [URL], to peer: PeerDevice) {
-        if !urls.isEmpty { selectedTab = 1 }   // jump to Transfers
+        guard !urls.isEmpty else { return }
+        selectedTab = 1   // jump to Transfers
         for url in urls {
-            let transferId = UUID().uuidString
-            let t = Transfer(id: transferId, direction: .outgoing, peerName: peer.displayName,
-                             fileName: url.lastPathComponent, totalBytes: fileSize(url),
-                             transferredBytes: 0, state: .active, startedAt: Date(),
-                             localPath: url.path)
-            upsertTransfer(t)
-            Task {
-                do {
-                    try await sendClient.sendFile(to: peer, fileURL: url, transferId: transferId) { sent, _ in
-                        Task { @MainActor in self.updateProgress(id: transferId, bytes: sent) }
-                    }
-                    finishTransfer(id: transferId, state: .completed, error: nil)
-                } catch {
-                    finishTransfer(id: transferId, state: .failed, error: error.localizedDescription)
-                }
-            }
+            let id = UUID().uuidString
+            upsertTransfer(Transfer(id: id, direction: .outgoing, peerName: peer.displayName,
+                                    fileName: url.lastPathComponent, totalBytes: fileSize(url),
+                                    transferredBytes: 0, state: .active, startedAt: Date(),
+                                    localPath: url.path, peerId: peer.peerId))
+            startSend(id: id, url: url, peer: peer)
         }
+    }
+
+    private func startSend(id: String, url: URL, peer: PeerDevice) {
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.sendLimiter.acquire()
+            defer { Task { await self.sendLimiter.release() } }
+            if Task.isCancelled { await self.markCanceled(id); return }
+            await self.performSend(id: id, url: url, peer: peer)
+        }
+        activeSendTasks[id] = task
+    }
+
+    private func performSend(id: String, url: URL, peer: PeerDevice) async {
+        do {
+            try await sendClient.sendFile(to: peer, fileURL: url, transferId: id) { sent, _ in
+                Task { @MainActor in self.updateProgress(id: id, bytes: sent) }
+            }
+            finishTransfer(id: id, state: .completed, error: nil)
+        } catch is CancellationError {
+            markCanceled(id)
+        } catch {
+            if (error as? URLError)?.code == .cancelled { markCanceled(id) }
+            else { finishTransfer(id: id, state: .failed, error: error.localizedDescription) }
+        }
+        activeSendTasks[id] = nil
+    }
+
+    private func markCanceled(_ id: String) {
+        finishTransfer(id: id, state: .failed, error: L(.canceled, .current))
+    }
+
+    /// Cancels an in-flight outgoing transfer.
+    func cancelTransfer(_ transfer: Transfer) {
+        activeSendTasks[transfer.id]?.cancel()
+    }
+
+    /// Re-sends a failed/canceled outgoing transfer using its stored source path.
+    func resendTransfer(_ transfer: Transfer) {
+        guard transfer.direction == .outgoing, let path = transfer.localPath,
+              let peer = peers.first(where: { $0.peerId == transfer.peerId }) else { return }
+        if let i = transfers.firstIndex(where: { $0.id == transfer.id }) {
+            transfers[i].state = .active
+            transfers[i].error = nil
+            transfers[i].transferredBytes = 0
+        }
+        startSend(id: transfer.id, url: URL(fileURLWithPath: path), peer: peer)
     }
 
     // MARK: peers

@@ -89,7 +89,8 @@ data class Transfer(
     val transferredBytes: Long = 0,
     val state: TransferState = TransferState.ACTIVE,
     val error: String? = null,
-    val localPath: String? = null   // content uri of the sent source / received file
+    val localPath: String? = null,  // content uri of the sent source / received file
+    val peerId: String = ""         // for resending an outgoing transfer
 ) {
     val progress: Float
         get() = if (totalBytes > 0) (transferredBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f

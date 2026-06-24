@@ -39,6 +39,7 @@ enum LKey {
     case from, to, failed
     case confirmPinOnOther, pairingFailed, cantBindPort, checksumMismatch
     case open, revealInFinder, delete, renameFile, openFolder
+    case resend, canceled
 }
 
 /// Localized string. Views pass an @AppStorage-tracked `lang` so they re-render on change.
@@ -122,5 +123,7 @@ func L(_ key: LKey, _ lang: Lang = .current) -> String {
     case .delete:             return ko ? "삭제" : "Delete"
     case .renameFile:         return ko ? "파일 이름 변경" : "Rename File"
     case .openFolder:         return ko ? "폴더 열기" : "Open Folder"
+    case .resend:             return ko ? "재전송" : "Resend"
+    case .canceled:           return ko ? "취소됨" : "Canceled"
     }
 }

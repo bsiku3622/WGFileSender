@@ -101,8 +101,15 @@ struct TransferRow: View {
     /// Right side: progress while active, otherwise a "⋯" actions menu.
     @ViewBuilder private var trailing: some View {
         if transfer.state == .active {
-            Text("\(Int(transfer.progress * 100))%")
-                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("\(Int(transfer.progress * 100))%")
+                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                Button { state.cancelTransfer(transfer) } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(L(.cancel, lang))
+            }
         } else {
             Menu { menuItems } label: {
                 Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(.secondary)
@@ -118,6 +125,11 @@ struct TransferRow: View {
             .disabled(!state.transferFileExists(transfer))
         Button(L(.revealInFinder, lang)) { state.revealTransferFile(transfer) }
             .disabled(!state.transferFileExists(transfer))
+        if transfer.direction == .outgoing && transfer.state == .failed {
+            Divider()
+            Button(L(.resend, lang)) { state.resendTransfer(transfer) }
+                .disabled(transfer.localPath == nil)
+        }
         if transfer.direction == .incoming {
             Divider()
             Button(L(.renameFile, lang)) { newName = transfer.fileName; renaming = true }

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.MoreVert
@@ -269,8 +270,14 @@ private fun TransferCard(controller: AppController, transfer: Transfer) {
             }
             Spacer(Modifier.width(10.dp))
             if (transfer.state == TransferState.ACTIVE) {
-                Text("${(transfer.progress * 100).toInt()}%",
-                    color = Shad.mutedForeground, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${(transfer.progress * 100).toInt()}%",
+                        color = Shad.mutedForeground, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    Spacer(Modifier.width(4.dp))
+                    Icon(Icons.Rounded.Close, null, tint = Shad.mutedForeground,
+                        modifier = Modifier.size(20.dp).clip(CircleShape)
+                            .clickable { controller.cancelTransfer(transfer) })
+                }
             } else {
                 Box {
                     Icon(Icons.Rounded.MoreVert, null, tint = Shad.mutedForeground,
@@ -278,6 +285,10 @@ private fun TransferCard(controller: AppController, transfer: Transfer) {
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text(t(S.open)) },
                             onClick = { menu = false; controller.openTransfer(transfer) })
+                        if (!incoming && transfer.state == TransferState.FAILED) {
+                            DropdownMenuItem(text = { Text(t(S.resend)) },
+                                onClick = { menu = false; controller.resendTransfer(transfer) })
+                        }
                         if (incoming) {
                             DropdownMenuItem(text = { Text(t(S.renameFile)) },
                                 onClick = { menu = false; newName = transfer.fileName; renaming = true })

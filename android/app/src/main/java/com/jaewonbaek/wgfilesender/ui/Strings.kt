@@ -29,7 +29,7 @@ enum class S {
     pairingWith, close, from, to, failed,
     confirmPinOnOther, pairingFailed, checksumMismatch, noDownloadFolder,
     channelName, channelDesc, notifReady,
-    open, delete, renameFile, openFolder
+    open, delete, renameFile, openFolder, resend, canceled
 }
 
 val LocalLang = staticCompositionLocalOf { Lang.EN }
@@ -109,5 +109,7 @@ fun str(key: S, lang: Lang): String {
         S.delete -> if (ko) "삭제" else "Delete"
         S.renameFile -> if (ko) "파일 이름 변경" else "Rename File"
         S.openFolder -> if (ko) "폴더 열기" else "Open Folder"
+        S.resend -> if (ko) "재전송" else "Resend"
+        S.canceled -> if (ko) "취소됨" else "Canceled"
     }
 }

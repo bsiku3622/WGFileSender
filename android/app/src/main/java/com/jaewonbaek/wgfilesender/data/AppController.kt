@@ -20,12 +20,16 @@ import com.jaewonbaek.wgfilesender.net.SendClient
 import com.jaewonbaek.wgfilesender.ui.Lang
 import com.jaewonbaek.wgfilesender.ui.S
 import com.jaewonbaek.wgfilesender.ui.str
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
 import kotlin.random.Random
 
@@ -142,25 +146,58 @@ class AppController(private val context: Context) : ListenerEvents {
 
     fun setTab(index: Int) { selectedTab.value = index }
 
+    // Cap concurrent uploads so sending many files doesn't swamp the receiver.
+    private val sendSemaphore = Semaphore(4)
+    private val activeSendJobs = mutableMapOf<String, Job>()
+
     fun sendFiles(uris: List<Uri>, peer: PeerDevice) {
         if (uris.isNotEmpty()) selectedTab.value = 1   // jump to Transfers
         for (uri in uris) {
             val meta = UriUtil.metadata(context, uri)
             val transferId = UUID.randomUUID().toString()
             upsertTransfer(Transfer(transferId, TransferDirection.OUTGOING, peer.displayName,
-                meta.name, meta.size, localPath = uri.toString()))
-            scope.launch {
-                try {
-                    sendClient.sendFile(peer, uri, meta.name, meta.size, transferId) { sent ->
-                        updateProgress(transferId, sent)
-                    }
-                    finishTransfer(transferId, TransferState.COMPLETED, null)
-                } catch (e: Exception) {
-                    finishTransfer(transferId, TransferState.FAILED, e.message)
-                }
-            }
+                meta.name, meta.size, localPath = uri.toString(), peerId = peer.peerId))
+            launchSend(transferId, peer, uri, meta.name, meta.size)
         }
         sharedUris.value = emptyList()
+    }
+
+    private fun launchSend(transferId: String, peer: PeerDevice, uri: Uri, name: String, size: Long) {
+        val job = scope.launch {
+            try {
+                sendSemaphore.withPermit {
+                    try {
+                        sendClient.sendFile(peer, uri, name, size, transferId) { sent ->
+                            updateProgress(transferId, sent)
+                        }
+                        finishTransfer(transferId, TransferState.COMPLETED, null)
+                    } catch (e: CancellationException) {
+                        finishTransfer(transferId, TransferState.FAILED, str(S.canceled, language.value))
+                        throw e
+                    } catch (e: Exception) {
+                        finishTransfer(transferId, TransferState.FAILED, e.message)
+                    }
+                }
+            } finally {
+                activeSendJobs.remove(transferId)
+            }
+        }
+        activeSendJobs[transferId] = job
+    }
+
+    fun cancelTransfer(transfer: Transfer) {
+        activeSendJobs[transfer.id]?.cancel()
+    }
+
+    fun resendTransfer(transfer: Transfer) {
+        if (transfer.direction != TransferDirection.OUTGOING) return
+        val uri = transfer.localPath?.let { Uri.parse(it) } ?: return
+        val peer = peers.value.firstOrNull { it.peerId == transfer.peerId } ?: return
+        val meta = UriUtil.metadata(context, uri)
+        transfers.value = transfers.value.map {
+            if (it.id == transfer.id) it.copy(state = TransferState.ACTIVE, error = null, transferredBytes = 0) else it
+        }
+        launchSend(transfer.id, peer, uri, meta.name, meta.size)
     }
 
     fun setSharedUris(uris: List<Uri>) { sharedUris.value = uris }
