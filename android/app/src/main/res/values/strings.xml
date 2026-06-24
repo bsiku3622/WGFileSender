@@ -1,5 +1,3 @@
 <resources>
     <string name="app_name">WGFileSender</string>
-    <string name="channel_name">Receiving</string>
-    <string name="channel_desc">Keeps WGFileSender ready to receive files</string>
 </resources>

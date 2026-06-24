@@ -3,21 +3,23 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
     @State private var portText = ""
     @State private var editingName = false
 
     var body: some View {
         Form {
-            Section("This Device") {
-                LabeledContent("Name") {
+            Section(L(.thisDevice, lang)) {
+                LabeledContent(L(.name, lang)) {
                     HStack(spacing: 10) {
                         Text(state.identity.deviceName)
                             .foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.tail)
-                        Button("Edit…") { editingName = true }
+                        Button(L(.edit, lang)) { editingName = true }
                     }
                 }
-                LabeledContent("Identifier") {
+                LabeledContent(L(.identifier, lang)) {
                     Text(state.identity.deviceId)
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
@@ -25,16 +27,16 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Receiving") {
-                LabeledContent("Download folder") {
+            Section(L(.receiving, lang)) {
+                LabeledContent(L(.downloadFolder, lang)) {
                     HStack(spacing: 10) {
                         Text(state.settings.downloadRoot)
                             .font(.caption).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle)
-                        Button("Choose…") { chooseFolder() }
+                        Button(L(.choose, lang)) { chooseFolder() }
                     }
                 }
-                LabeledContent("Listen port") {
+                LabeledContent(L(.listenPort, lang)) {
                     TextField("", text: $portText)
                         .labelsHidden()
                         .multilineTextAlignment(.trailing)
@@ -47,14 +49,22 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Appearance") {
-                Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
-                Text("When off, open the app from the Dock instead.")
+            Section(L(.appearance, lang)) {
+                Toggle(L(.showMenuBarIcon, lang), isOn: $showMenuBarIcon)
+                Text(L(.showMenuBarIconHint, lang))
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section(L(.language, lang)) {
+                Picker(L(.language, lang), selection: $langRaw) {
+                    ForEach(Lang.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
             Section {
-                Text("Files arrive in a subfolder named after the sending device. Transfers go directly over your WireGuard tunnel — no relay server.")
+                Text(L(.settingsFooter, lang))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -86,19 +96,21 @@ struct SettingsView: View {
 struct EditNameSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
     @State private var name = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Device Name").font(.headline)
-            Text("Shown to devices you pair with, and used as your subfolder name on their side.")
+            Text(L(.deviceNameTitle, lang)).font(.headline)
+            Text(L(.deviceNameHint, lang))
                 .font(.callout).foregroundStyle(.secondary)
-            TextField("Device name", text: $name)
+            TextField(L(.deviceNamePlaceholder, lang), text: $name)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Save") {
+                Button(L(.cancel, lang), role: .cancel) { dismiss() }
+                Button(L(.save, lang)) {
                     let trimmed = name.trimmingCharacters(in: .whitespaces)
                     if !trimmed.isEmpty { state.updateDeviceName(trimmed) }
                     dismiss()

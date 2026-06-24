@@ -10,6 +10,8 @@ import com.jaewonbaek.wgfilesender.MainActivity
 import com.jaewonbaek.wgfilesender.R
 import com.jaewonbaek.wgfilesender.WgfsApp
 import com.jaewonbaek.wgfilesender.controller
+import com.jaewonbaek.wgfilesender.ui.S
+import com.jaewonbaek.wgfilesender.ui.str
 
 /** Keeps the HTTP listener alive in the background via a foreground notification. */
 class ListenerService : Service() {
@@ -34,7 +36,7 @@ class ListenerService : Service() {
         val port = controller.settings.value.port
         return NotificationCompat.Builder(this, WgfsApp.CHANNEL_ID)
             .setContentTitle("WGFileSender")
-            .setContentText("Ready to receive on port $port")
+            .setContentText(String.format(str(S.notifReady, controller.language.value), port))
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setContentIntent(open)

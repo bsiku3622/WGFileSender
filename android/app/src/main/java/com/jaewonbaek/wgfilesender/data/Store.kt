@@ -44,4 +44,10 @@ class Store(context: Context) {
     fun saveSettings(settings: Settings) {
         prefs.edit().putString("settings", json.encodeToString(settings)).apply()
     }
+
+    fun loadLanguage(): String? = prefs.getString("appLanguage", null)
+
+    fun saveLanguage(name: String) {
+        prefs.edit().putString("appLanguage", name).apply()
+    }
 }

@@ -19,6 +19,8 @@ struct WGFileSenderApp: App {
 /// Compact panel shown from the menu bar.
 struct MenuBarContent: View {
     @EnvironmentObject var state: AppState
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -27,28 +29,29 @@ struct MenuBarContent: View {
                     .fill(state.listenerError == nil ? Color.green : Color.red)
                     .frame(width: 8, height: 8)
                 Text(state.listenerError == nil
-                     ? "Listening on port \(state.settings.port)"
-                     : "Listener offline")
+                     ? String(format: L(.listeningOnPort, lang), Int(state.settings.port))
+                     : L(.listenerOffline, lang))
                     .font(.callout)
             }
 
             if state.activeTransferCount > 0 {
-                Label("\(state.activeTransferCount) transferring…", systemImage: "arrow.left.arrow.right")
+                Label(String(format: L(.transferring, lang), state.activeTransferCount),
+                      systemImage: "arrow.left.arrow.right")
                     .font(.callout).foregroundStyle(.secondary)
             }
 
             Divider()
 
-            Text("\(state.peers.count) paired device\(state.peers.count == 1 ? "" : "s")")
+            Text(String(format: L(.pairedDevices, lang), state.peers.count))
                 .font(.caption).foregroundStyle(.secondary)
 
-            Button("Open WGFileSender") {
+            Button(L(.openApp, lang)) {
                 NSApp.activate(ignoringOtherApps: true)
                 for window in NSApp.windows where window.canBecomeMain {
                     window.makeKeyAndOrderFront(nil)
                 }
             }
-            Button("Quit") { NSApp.terminate(nil) }
+            Button(L(.quit, lang)) { NSApp.terminate(nil) }
         }
         .padding(14)
         .frame(width: 240)

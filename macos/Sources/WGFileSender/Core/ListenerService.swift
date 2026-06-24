@@ -143,7 +143,7 @@ final class ListenerService {
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard digest == expectedHash.lowercased() else {
             try? fm.removeItem(at: partURL)
-            events.onTransferFinish(transferId, .failed, "checksum mismatch")
+            events.onTransferFinish(transferId, .failed, L(.checksumMismatch, .current))
             return .status(409)
         }
 

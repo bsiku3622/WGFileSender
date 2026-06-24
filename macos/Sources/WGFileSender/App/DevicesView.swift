@@ -3,6 +3,9 @@ import UniformTypeIdentifiers
 
 struct DevicesView: View {
     @EnvironmentObject var state: AppState
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
+
     @State private var showAdd = false
     @State private var importPeer: PeerDevice?
     @State private var renaming: PeerDevice?
@@ -45,9 +48,9 @@ struct DevicesView: View {
 
     private var header: some View {
         HStack {
-            Text("Devices").font(.title2).bold()
+            Text(L(.devices, lang)).font(.title2).bold()
             Spacer()
-            Button { showAdd = true } label: { Label("Add Device", systemImage: "plus") }
+            Button { showAdd = true } label: { Label(L(.addDevice, lang), systemImage: "plus") }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -58,11 +61,11 @@ struct DevicesView: View {
             Spacer()
             Image(systemName: "laptopcomputer.and.iphone")
                 .font(.system(size: 44)).foregroundStyle(.secondary)
-            Text("No paired devices").font(.headline)
-            Text("Add a device by its WireGuard IP. Both sides confirm a PIN to pair.")
+            Text(L(.noPairedDevices, lang)).font(.headline)
+            Text(L(.noPairedDevicesHint, lang))
                 .font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)
-            Button { showAdd = true } label: { Label("Add Device", systemImage: "plus") }
+            Button { showAdd = true } label: { Label(L(.addDevice, lang), systemImage: "plus") }
                 .buttonStyle(.borderedProminent)
             Spacer()
         }
@@ -75,47 +78,48 @@ struct PeerRow: View {
     let onSend: () -> Void
     let onRename: () -> Void
     let onRemove: () -> Void
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: Theme.icon(for: peerPlatform))
+            Image(systemName: "laptopcomputer")
                 .font(.title2).foregroundStyle(.secondary).frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(peer.displayName).font(.body).bold()
                 Text(peer.peerAddress).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button { onSend() } label: { Label("Send", systemImage: "paperplane") }
+            Button { onSend() } label: { Label(L(.send, lang), systemImage: "paperplane") }
                 .buttonStyle(.bordered)
             Menu {
-                Button("Rename…") { onRename() }
-                Button("Remove", role: .destructive) { onRemove() }
+                Button(L(.rename, lang)) { onRename() }
+                Button(L(.remove, lang), role: .destructive) { onRemove() }
             } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).frame(width: 28)
         }
         .padding(.vertical, 6)
     }
-
-    // platform isn't stored on the peer record yet; default to laptop glyph.
-    private var peerPlatform: String { "" }
 }
 
 struct AddDeviceSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
     @State private var address = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Add Device").font(.headline)
-            Text("Enter the device's WireGuard address. The default port is \(kDefaultPort).")
+            Text(L(.addDevice, lang)).font(.headline)
+            Text(String(format: L(.addDeviceHint, lang), Int(kDefaultPort)))
                 .font(.callout).foregroundStyle(.secondary)
-            TextField("10.0.0.2 or 10.0.0.2:\(kDefaultPort)", text: $address)
+            TextField(String(format: L(.addDevicePlaceholder, lang), Int(kDefaultPort)), text: $address)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Pair") {
+                Button(L(.cancel, lang), role: .cancel) { dismiss() }
+                Button(L(.pair, lang)) {
                     state.startOutgoingPair(address: normalized(address))
                     dismiss()
                 }
@@ -136,20 +140,22 @@ struct AddDeviceSheet: View {
 struct RenameSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
     let peer: PeerDevice
     @State private var name = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Rename Device").font(.headline)
-            Text("Local name overrides the name this device advertises. Files arrive under this folder name.")
+            Text(L(.renameTitle, lang)).font(.headline)
+            Text(L(.renameHint, lang))
                 .font(.callout).foregroundStyle(.secondary)
             TextField(peer.peerName, text: $name)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Save") { state.renamePeer(peer, to: name); dismiss() }
+                Button(L(.cancel, lang), role: .cancel) { dismiss() }
+                Button(L(.save, lang)) { state.renamePeer(peer, to: name); dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
         }

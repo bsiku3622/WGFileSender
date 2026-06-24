@@ -70,7 +70,7 @@ final class AppState: ObservableObject {
         )
         listener = ListenerService(config: config, events: events)
         do { try listener.start(); listenerError = nil }
-        catch { listenerError = "Couldn't start listener on port \(settings.port): \(error.localizedDescription)" }
+        catch { listenerError = String(format: L(.cantBindPort, .current), Int(settings.port), error.localizedDescription) }
     }
 
     // MARK: incoming pairing
@@ -113,7 +113,7 @@ final class AppState: ObservableObject {
         let sessionId = UUID().uuidString
         outgoingPairing = OutgoingPairing(
             address: address, pin: pin,
-            status: "Confirm PIN \(Self.pretty(pin)) on the other device, then accept there.")
+            status: String(format: L(.confirmPinOnOther, .current), Self.pretty(pin)))
         Task {
             do {
                 let resp = try await sendClient.requestPair(address: address, sessionId: sessionId, pin: pin)
@@ -126,7 +126,7 @@ final class AppState: ObservableObject {
                                                  ourTokenForPeer: ourToken)
                 outgoingPairing = nil
             } catch {
-                outgoingPairing?.status = "Pairing failed: \(error.localizedDescription)"
+                outgoingPairing?.status = String(format: L(.pairingFailed, .current), error.localizedDescription)
                 outgoingPairing?.failed = true
             }
         }
@@ -198,7 +198,7 @@ final class AppState: ObservableObject {
         settings.port = port
         persistSettings()
         do { try listener.restart(); listenerError = nil }
-        catch { listenerError = "Couldn't bind port \(port): \(error.localizedDescription)" }
+        catch { listenerError = String(format: L(.cantBindPort, .current), Int(port), error.localizedDescription) }
     }
 
     private func persistSettings() {

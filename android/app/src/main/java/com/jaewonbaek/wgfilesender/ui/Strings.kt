@@ -1,0 +1,108 @@
+package com.jaewonbaek.wgfilesender.ui
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
+import java.util.Locale
+
+/** App language, chosen in Settings (not tied to the system locale). */
+enum class Lang(val label: String) {
+    EN("English"), KO("한국어");
+
+    companion object {
+        fun from(s: String?): Lang = entries.firstOrNull { it.name == s } ?: systemDefault()
+        fun systemDefault(): Lang =
+            if (Locale.getDefault().language == "ko") KO else EN
+    }
+}
+
+enum class S {
+    devices, transfers, settings, add, send, rename, remove,
+    noPairedDevices, noPairedDevicesHint, noTransfers, noTransfersHint, clear,
+    filesReadyToSend, tapDeviceToSend,
+    listening, listenerOffline, readyOnPort,
+    thisDevice, nameLabel, deviceNamePlaceholder, saveName,
+    receiving, downloadFolder, folderNotSet, chooseFolder, listenPort, apply,
+    settingsFooter, language,
+    addDeviceTitle, addDeviceHint, addDevicePlaceholder, pair, cancel,
+    renameTitle, renameHint, save,
+    wantsToPair, confirmPinMatch, decline, accept,
+    pairingWith, close, from, to, failed,
+    confirmPinOnOther, pairingFailed, checksumMismatch, noDownloadFolder,
+    channelName, channelDesc, notifReady
+}
+
+val LocalLang = staticCompositionLocalOf { Lang.EN }
+
+@Composable
+fun t(key: S): String = str(key, LocalLang.current)
+
+@Suppress("CyclomaticComplexMethod")
+fun str(key: S, lang: Lang): String {
+    val ko = lang == Lang.KO
+    return when (key) {
+        S.devices -> if (ko) "기기" else "Devices"
+        S.transfers -> if (ko) "전송" else "Transfers"
+        S.settings -> if (ko) "설정" else "Settings"
+        S.add -> if (ko) "추가" else "Add"
+        S.send -> if (ko) "보내기" else "Send"
+        S.rename -> if (ko) "이름 변경" else "Rename"
+        S.remove -> if (ko) "삭제" else "Remove"
+        S.noPairedDevices -> if (ko) "페어링된 기기 없음" else "No paired devices"
+        S.noPairedDevicesHint -> if (ko)
+            "WireGuard IP로 기기를 추가하세요. 양쪽에서 PIN을 확인하면 페어링됩니다."
+        else "Add a device by its WireGuard IP. Both sides confirm a PIN to pair."
+        S.noTransfers -> if (ko) "아직 전송 없음" else "No transfers yet"
+        S.noTransfersHint -> if (ko) "보내거나 받은 파일이 여기에 표시됩니다."
+        else "Files you send or receive will appear here."
+        S.clear -> if (ko) "지우기" else "Clear"
+        S.filesReadyToSend -> if (ko) "보낼 파일 %d개" else "%d file(s) ready to send"
+        S.tapDeviceToSend -> if (ko) "아래에서 기기를 눌러 보내세요." else "Tap a device below to send them."
+        S.listening -> if (ko) "수신 대기 중" else "Listening"
+        S.listenerOffline -> if (ko) "리스너 꺼짐" else "Listener offline"
+        S.readyOnPort -> if (ko) "포트 %d에서 수신 대기 중" else "Ready to receive on port %d"
+        S.thisDevice -> if (ko) "내 기기" else "This Device"
+        S.nameLabel -> if (ko) "이름" else "Name"
+        S.deviceNamePlaceholder -> if (ko) "기기 이름" else "Device name"
+        S.saveName -> if (ko) "이름 저장" else "Save name"
+        S.receiving -> if (ko) "수신" else "Receiving"
+        S.downloadFolder -> if (ko) "다운로드 폴더" else "Download folder"
+        S.folderNotSet -> if (ko) "미설정 — 파일을 받으려면 필요합니다" else "Not set — required to receive files"
+        S.chooseFolder -> if (ko) "폴더 선택" else "Choose folder"
+        S.listenPort -> if (ko) "수신 포트" else "Listen port"
+        S.apply -> if (ko) "적용" else "Apply"
+        S.settingsFooter -> if (ko)
+            "파일은 보낸 기기 이름의 하위 폴더에 저장됩니다. 전송은 WireGuard 터널을 통해 직접 이뤄지며 중계 서버가 없습니다."
+        else "Files arrive in a subfolder named after the sending device. Transfers go directly over your WireGuard tunnel — no relay server."
+        S.language -> if (ko) "언어" else "Language"
+        S.addDeviceTitle -> if (ko) "기기 추가" else "Add Device"
+        S.addDeviceHint -> if (ko) "기기의 WireGuard 주소를 입력하세요. 기본 포트는 %d입니다."
+        else "Enter the device's WireGuard address. Default port is %d."
+        S.addDevicePlaceholder -> "10.0.0.2 : %d"
+        S.pair -> if (ko) "페어링" else "Pair"
+        S.cancel -> if (ko) "취소" else "Cancel"
+        S.renameTitle -> if (ko) "기기 이름 변경" else "Rename Device"
+        S.renameHint -> if (ko)
+            "로컬 이름은 기기가 알리는 이름을 대체합니다. 파일이 이 폴더 이름으로 저장됩니다."
+        else "Local name overrides what this device advertises. Files arrive under this folder name."
+        S.save -> if (ko) "저장" else "Save"
+        S.wantsToPair -> if (ko) "%s이(가) 페어링을 요청합니다" else "%s wants to pair"
+        S.confirmPinMatch -> if (ko) "이 PIN이 상대 기기와 같은지 확인하세요."
+        else "Confirm this PIN matches the one on that device."
+        S.decline -> if (ko) "거절" else "Decline"
+        S.accept -> if (ko) "수락" else "Accept"
+        S.pairingWith -> if (ko) "%s와(과) 페어링 중" else "Pairing with %s"
+        S.close -> if (ko) "닫기" else "Close"
+        S.from -> if (ko) "보낸 곳" else "from"
+        S.to -> if (ko) "받는 곳" else "to"
+        S.failed -> if (ko) "실패" else "failed"
+        S.confirmPinOnOther -> if (ko) "상대 기기에서 PIN %s을(를) 확인한 뒤 수락하세요."
+        else "Confirm PIN %s on the other device, then accept there."
+        S.pairingFailed -> if (ko) "페어링 실패: %s" else "Pairing failed: %s"
+        S.checksumMismatch -> if (ko) "체크섬 불일치" else "checksum mismatch"
+        S.noDownloadFolder -> if (ko) "다운로드 폴더가 설정되지 않음" else "no download folder set"
+        S.channelName -> if (ko) "수신" else "Receiving"
+        S.channelDesc -> if (ko) "WGFileSender가 파일을 받을 수 있게 유지합니다"
+        else "Keeps WGFileSender ready to receive files"
+        S.notifReady -> if (ko) "포트 %d에서 수신 대기 중" else "Ready to receive on port %d"
+    }
+}

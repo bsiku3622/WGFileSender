@@ -1,17 +1,15 @@
 package com.jaewonbaek.wgfilesender.ui
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Error
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -36,7 +34,6 @@ import com.jaewonbaek.wgfilesender.ui.components.ShadButton
 import com.jaewonbaek.wgfilesender.ui.components.ShadCard
 import com.jaewonbaek.wgfilesender.ui.components.ShadTextField
 import com.jaewonbaek.wgfilesender.ui.theme.Shad
-import androidx.compose.ui.text.input.KeyboardType
 
 @Composable
 fun IncomingPairDialog(controller: AppController, pending: AppController.PendingPairing) {
@@ -45,19 +42,19 @@ fun IncomingPairDialog(controller: AppController, pending: AppController.Pending
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Rounded.Key, null, tint = Shad.accent, modifier = Modifier.size(36.dp))
                 Spacer(Modifier.height(12.dp))
-                Text("${pending.body.deviceName} wants to pair",
+                Text(String.format(t(S.wantsToPair), pending.body.deviceName),
                     fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(6.dp))
-                Text("Confirm this PIN matches the one on that device.",
+                Text(t(S.confirmPinMatch),
                     color = Shad.mutedForeground, fontSize = 13.sp, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(16.dp))
                 Text(AppController.pretty(pending.body.pin),
                     fontSize = 32.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.height(20.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ShadButton("Decline", { controller.declineIncomingPair() },
+                    ShadButton(t(S.decline), { controller.declineIncomingPair() },
                         Modifier.weight(1f), BtnVariant.Outline)
-                    ShadButton("Accept", { controller.acceptIncomingPair() }, Modifier.weight(1f))
+                    ShadButton(t(S.accept), { controller.acceptIncomingPair() }, Modifier.weight(1f))
                 }
             }
         }
@@ -75,7 +72,7 @@ fun OutgoingPairDialog(controller: AppController, outgoing: AppController.Outgoi
                     CircularProgressIndicator(color = Shad.accent, modifier = Modifier.size(32.dp))
                 }
                 Spacer(Modifier.height(12.dp))
-                Text("Pairing with ${outgoing.address}",
+                Text(String.format(t(S.pairingWith), outgoing.address),
                     fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(12.dp))
                 Text(AppController.pretty(outgoing.pin),
@@ -84,7 +81,7 @@ fun OutgoingPairDialog(controller: AppController, outgoing: AppController.Outgoi
                 Text(outgoing.status, color = Shad.mutedForeground, fontSize = 13.sp,
                     textAlign = TextAlign.Center)
                 Spacer(Modifier.height(18.dp))
-                ShadButton(if (outgoing.failed) "Close" else "Cancel",
+                ShadButton(if (outgoing.failed) t(S.close) else t(S.cancel),
                     { controller.dismissOutgoingPair() }, Modifier.fillMaxWidth(), BtnVariant.Outline)
             }
         }
@@ -96,16 +93,16 @@ fun AddDeviceDialog(controller: AppController, onDismiss: () -> Unit) {
     var address by remember { mutableStateOf("") }
     Dialog(onDismissRequest = onDismiss) {
         ShadCard {
-            Text("Add Device", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text(t(S.addDeviceTitle), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
-            Text("Enter the device's WireGuard address. Default port is $DEFAULT_PORT.",
+            Text(String.format(t(S.addDeviceHint), DEFAULT_PORT),
                 color = Shad.mutedForeground, fontSize = 13.sp)
             Spacer(Modifier.height(14.dp))
-            ShadTextField(address, { address = it }, "10.0.0.2 or 10.0.0.2:$DEFAULT_PORT")
+            ShadTextField(address, { address = it }, String.format(t(S.addDevicePlaceholder), DEFAULT_PORT))
             Spacer(Modifier.height(18.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ShadButton("Cancel", onDismiss, Modifier.weight(1f), BtnVariant.Outline)
-                ShadButton("Pair", {
+                ShadButton(t(S.cancel), onDismiss, Modifier.weight(1f), BtnVariant.Outline)
+                ShadButton(t(S.pair), {
                     val normalized = address.trim().let { if (it.contains(":")) it else "$it:$DEFAULT_PORT" }
                     controller.startOutgoingPair(normalized)
                     onDismiss()
@@ -120,16 +117,15 @@ fun RenameDialog(controller: AppController, peer: PeerDevice, onDismiss: () -> U
     var name by remember { mutableStateOf(peer.localName ?: peer.peerName) }
     Dialog(onDismissRequest = onDismiss) {
         ShadCard {
-            Text("Rename Device", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text(t(S.renameTitle), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
-            Text("Local name overrides what this device advertises. Files arrive under this folder name.",
-                color = Shad.mutedForeground, fontSize = 13.sp)
+            Text(t(S.renameHint), color = Shad.mutedForeground, fontSize = 13.sp)
             Spacer(Modifier.height(14.dp))
             ShadTextField(name, { name = it }, peer.peerName)
             Spacer(Modifier.height(18.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ShadButton("Cancel", onDismiss, Modifier.weight(1f), BtnVariant.Outline)
-                ShadButton("Save", { controller.renamePeer(peer, name); onDismiss() }, Modifier.weight(1f))
+                ShadButton(t(S.cancel), onDismiss, Modifier.weight(1f), BtnVariant.Outline)
+                ShadButton(t(S.save), { controller.renamePeer(peer, name); onDismiss() }, Modifier.weight(1f))
             }
         }
     }

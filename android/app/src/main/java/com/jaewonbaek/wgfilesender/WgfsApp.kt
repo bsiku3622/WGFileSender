@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import com.jaewonbaek.wgfilesender.data.AppController
+import com.jaewonbaek.wgfilesender.ui.S
+import com.jaewonbaek.wgfilesender.ui.str
 
 class WgfsApp : Application() {
     lateinit var controller: AppController
@@ -17,11 +19,12 @@ class WgfsApp : Application() {
     }
 
     private fun createChannel() {
+        val lang = controller.language.value
         val channel = NotificationChannel(
             CHANNEL_ID,
-            getString(R.string.channel_name),
+            str(S.channelName, lang),
             NotificationManager.IMPORTANCE_LOW
-        ).apply { description = getString(R.string.channel_desc) }
+        ).apply { description = str(S.channelDesc, lang) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 

@@ -14,6 +14,8 @@ import com.jaewonbaek.wgfilesender.model.SendStatusResponse
 import com.jaewonbaek.wgfilesender.model.Transfer
 import com.jaewonbaek.wgfilesender.model.TransferDirection
 import com.jaewonbaek.wgfilesender.model.TransferState
+import com.jaewonbaek.wgfilesender.ui.S
+import com.jaewonbaek.wgfilesender.ui.str
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -145,12 +147,12 @@ class HttpListener(
         val digest = md.digest().joinToString("") { "%02x".format(it) }
         if (digest != expected) {
             part.delete()
-            events.onTransferFinish(transferId, TransferState.FAILED, "checksum mismatch")
+            events.onTransferFinish(transferId, TransferState.FAILED, str(S.checksumMismatch, config.language))
             return call.respond(HttpStatusCode.Conflict)
         }
         if (!saveToTree(folderName, fileName, part)) {
             part.delete()
-            events.onTransferFinish(transferId, TransferState.FAILED, "no download folder set")
+            events.onTransferFinish(transferId, TransferState.FAILED, str(S.noDownloadFolder, config.language))
             return call.respond(HttpStatusCode.InternalServerError)
         }
         part.delete()

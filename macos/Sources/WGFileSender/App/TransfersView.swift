@@ -2,13 +2,15 @@ import SwiftUI
 
 struct TransfersView: View {
     @EnvironmentObject var state: AppState
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Transfers").font(.title2).bold()
+                Text(L(.transfers, lang)).font(.title2).bold()
                 Spacer()
-                Button("Clear Finished") { state.clearFinishedTransfers() }
+                Button(L(.clearFinished, lang)) { state.clearFinishedTransfers() }
                     .disabled(!state.transfers.contains { $0.state != .active })
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
@@ -18,7 +20,8 @@ struct TransfersView: View {
                 VStack(spacing: 10) {
                     Spacer()
                     Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(.secondary)
-                    Text("No transfers yet").font(.headline)
+                    Text(L(.noTransfers, lang)).font(.headline)
+                    Text(L(.noTransfersHint, lang)).font(.callout).foregroundStyle(.secondary)
                     Spacer()
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -31,6 +34,8 @@ struct TransfersView: View {
 
 struct TransferRow: View {
     let transfer: Transfer
+    @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
+    private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -53,14 +58,14 @@ struct TransferRow: View {
     }
 
     private var subtitle: String {
-        let dir = transfer.direction == .incoming ? "from" : "to"
+        let dir = transfer.direction == .incoming ? L(.from, lang) : L(.to, lang)
         switch transfer.state {
         case .active:
             return "\(dir) \(transfer.peerName) · \(transfer.transferredBytes.humanBytes) / \(transfer.totalBytes.humanBytes)"
         case .completed:
             return "\(dir) \(transfer.peerName) · \(transfer.totalBytes.humanBytes)"
         case .failed:
-            return "\(dir) \(transfer.peerName) · \(transfer.error ?? "failed")"
+            return "\(dir) \(transfer.peerName) · \(transfer.error ?? L(.failed, lang))"
         }
     }
 

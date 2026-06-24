@@ -14,6 +14,9 @@ import com.jaewonbaek.wgfilesender.model.TransferState
 import com.jaewonbaek.wgfilesender.net.HttpListener
 import com.jaewonbaek.wgfilesender.net.ListenerEvents
 import com.jaewonbaek.wgfilesender.net.SendClient
+import com.jaewonbaek.wgfilesender.ui.Lang
+import com.jaewonbaek.wgfilesender.ui.S
+import com.jaewonbaek.wgfilesender.ui.str
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,11 +44,20 @@ class AppController(private val context: Context) : ListenerEvents {
     val listenerRunning = MutableStateFlow(false)
     val listenerError = MutableStateFlow<String?>(null)
     val sharedUris = MutableStateFlow<List<Uri>>(emptyList())
+    val language = MutableStateFlow(Lang.from(store.loadLanguage()))
 
     private val config = SharedConfig(identity.value, peers.value, settings.value)
     private val sendClient = SendClient(context, config)
     private val listener = HttpListener(context, config, this)
     private var pairDeferred: CompletableDeferred<String?>? = null
+
+    init { config.language = language.value }
+
+    fun setLanguage(lang: Lang) {
+        language.value = lang
+        store.saveLanguage(lang.name)
+        config.language = lang
+    }
 
     data class PendingPairing(val body: PairRequestBody, val address: String)
     data class OutgoingPairing(
@@ -104,7 +116,7 @@ class AppController(private val context: Context) : ListenerEvents {
     fun startOutgoingPair(address: String) {
         val pin = randomPin()
         outgoingPairing.value = OutgoingPairing(
-            address, pin, "Confirm PIN ${pretty(pin)} on the other device, then accept there.")
+            address, pin, String.format(str(S.confirmPinOnOther, language.value), pretty(pin)))
         scope.launch {
             try {
                 val resp = sendClient.requestPair(address, UUID.randomUUID().toString(), pin)
@@ -115,7 +127,7 @@ class AppController(private val context: Context) : ListenerEvents {
                 outgoingPairing.value = null
             } catch (e: Exception) {
                 outgoingPairing.value = outgoingPairing.value
-                    ?.copy(status = "Pairing failed: ${e.message}", failed = true)
+                    ?.copy(status = String.format(str(S.pairingFailed, language.value), e.message), failed = true)
             }
         }
     }
