@@ -169,24 +169,18 @@ class HttpListener(
         val safeFolder = folderName.replace('/', '_').ifBlank { "Unknown" }
         val folder = tree.findFile(safeFolder)?.takeIf { it.isDirectory }
             ?: tree.createDirectory(safeFolder) ?: return null
-        val target = uniqueChild(folder, fileName) ?: return null
+        val target = newChild(folder, fileName) ?: return null
         val out = context.contentResolver.openOutputStream(target.uri) ?: return null
         out.use { o -> source.inputStream().use { it.copyTo(o) } }
         return target.uri.toString()
     }
 
-    private fun uniqueChild(folder: DocumentFile, fileName: String): DocumentFile? {
+    /** Creates the file; the SAF provider auto-uniquifies the name (… (1), (2)) on collision. */
+    private fun newChild(folder: DocumentFile, fileName: String): DocumentFile? {
         val ext = fileName.substringAfterLast('.', "")
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.lowercase())
             ?: "application/octet-stream"
-        if (folder.findFile(fileName) == null) return folder.createFile(mime, fileName)
-        val stem = if (ext.isEmpty()) fileName else fileName.substring(0, fileName.length - ext.length - 1)
-        var n = 1
-        while (true) {
-            val candidate = if (ext.isEmpty()) "$stem ($n)" else "$stem ($n).$ext"
-            if (folder.findFile(candidate) == null) return folder.createFile(mime, candidate)
-            n++
-        }
+        return folder.createFile(mime, fileName)
     }
 
     private fun partFile(transferId: String) = File(context.cacheDir, "$transferId.part")
