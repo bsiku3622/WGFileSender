@@ -20,6 +20,13 @@
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <!-- Transfers are plaintext HTTP over the WireGuard tunnel (which already
+         encrypts); allow cleartext so URLSession can reach peers. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
     <key>NSHumanReadableCopyright</key>
     <string>© Jaewon Baek</string>
     <!-- Menu-bar app with a window; not a pure agent so the window can show. -->
