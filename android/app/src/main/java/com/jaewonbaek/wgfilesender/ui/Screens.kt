@@ -2,8 +2,10 @@ package com.jaewonbaek.wgfilesender.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.jaewonbaek.wgfilesender.data.AppController
 import com.jaewonbaek.wgfilesender.model.PeerDevice
 import com.jaewonbaek.wgfilesender.model.Transfer
@@ -195,6 +198,8 @@ private fun TransfersScreen(controller: AppController) {
             verticalAlignment = Alignment.CenterVertically) {
             Text(t(S.transfers), fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f))
+            ShadButton(t(S.openFolder), { controller.openDownloadFolder() },
+                icon = Icons.Rounded.Folder, variant = BtnVariant.Ghost)
             if (transfers.any { it.state != TransferState.ACTIVE }) {
                 ShadButton(t(S.clear), { controller.clearFinished() }, variant = BtnVariant.Ghost)
             }
@@ -203,27 +208,34 @@ private fun TransfersScreen(controller: AppController) {
             EmptyState(Icons.Rounded.Inbox, t(S.noTransfers), t(S.noTransfersHint))
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(transfers, key = { it.id }) { TransferCard(it) }
+                items(transfers, key = { it.id }) { TransferCard(controller, it) }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TransferCard(transfer: Transfer) {
+private fun TransferCard(controller: AppController, transfer: Transfer) {
     val lang = LocalLang.current
-    ShadCard {
+    val incoming = transfer.direction == TransferDirection.INCOMING
+    var menu by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf(transfer.fileName) }
+
+    ShadCard(Modifier.combinedClickable(
+        onClick = { controller.openTransfer(transfer) },
+        onLongClick = { menu = true }
+    )) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            val incoming = transfer.direction == TransferDirection.INCOMING
+            val tint = when {
+                transfer.state == TransferState.FAILED -> Shad.destructive
+                incoming -> Shad.received   // green
+                else -> Shad.sent           // orange
+            }
             Icon(
                 if (incoming) Icons.Rounded.ArrowDownward else Icons.Rounded.ArrowUpward,
-                null,
-                tint = when (transfer.state) {
-                    TransferState.ACTIVE -> Shad.accent
-                    TransferState.COMPLETED -> Shad.success
-                    TransferState.FAILED -> Shad.destructive
-                },
-                modifier = Modifier.size(22.dp)
+                null, tint = tint, modifier = Modifier.size(22.dp)
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -242,13 +254,41 @@ private fun TransferCard(transfer: Transfer) {
                 }
             }
             Spacer(Modifier.width(10.dp))
-            when (transfer.state) {
-                TransferState.ACTIVE -> Text("${(transfer.progress * 100).toInt()}%",
+            if (transfer.state == TransferState.ACTIVE) {
+                Text("${(transfer.progress * 100).toInt()}%",
                     color = Shad.mutedForeground, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                TransferState.COMPLETED -> Icon(Icons.Rounded.CheckCircle, null,
-                    tint = Shad.success, modifier = Modifier.size(20.dp))
-                TransferState.FAILED -> Icon(Icons.Rounded.Warning, null,
-                    tint = Shad.destructive, modifier = Modifier.size(20.dp))
+            } else {
+                Box {
+                    Icon(Icons.Rounded.MoreVert, null, tint = Shad.mutedForeground,
+                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable { menu = true })
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text(t(S.open)) },
+                            onClick = { menu = false; controller.openTransfer(transfer) })
+                        if (incoming) {
+                            DropdownMenuItem(text = { Text(t(S.renameFile)) },
+                                onClick = { menu = false; newName = transfer.fileName; renaming = true })
+                            DropdownMenuItem(text = { Text(t(S.delete)) },
+                                onClick = { menu = false; controller.deleteTransfer(transfer) })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (renaming) {
+        Dialog(onDismissRequest = { renaming = false }) {
+            ShadCard {
+                Text(t(S.renameFile), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(14.dp))
+                ShadTextField(newName, { newName = it }, transfer.fileName)
+                Spacer(Modifier.height(18.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ShadButton(t(S.cancel), { renaming = false }, Modifier.weight(1f), BtnVariant.Outline)
+                    ShadButton(t(S.save), {
+                        controller.renameTransfer(transfer, newName); renaming = false
+                    }, Modifier.weight(1f))
+                }
             }
         }
     }
@@ -342,7 +382,7 @@ private fun SettingsScreen(controller: AppController) {
 private fun StatusRow(running: Boolean, error: String?, port: Int) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(9.dp).clip(CircleShape)
-            .background(if (running && error == null) Shad.success else Shad.destructive))
+            .background(if (running && error == null) Shad.received else Shad.destructive))
         Spacer(Modifier.width(10.dp))
         Column {
             Text(if (running && error == null) t(S.listening) else t(S.listenerOffline),

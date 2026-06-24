@@ -150,28 +150,29 @@ class HttpListener(
             events.onTransferFinish(transferId, TransferState.FAILED, str(S.checksumMismatch, config.language))
             return call.respond(HttpStatusCode.Conflict)
         }
-        if (!saveToTree(folderName, fileName, part)) {
-            part.delete()
+        val savedUri = saveToTree(folderName, fileName, part)
+        part.delete()
+        if (savedUri == null) {
             events.onTransferFinish(transferId, TransferState.FAILED, str(S.noDownloadFolder, config.language))
             return call.respond(HttpStatusCode.InternalServerError)
         }
-        part.delete()
-        events.onTransferFinish(transferId, TransferState.COMPLETED, null)
+        events.onTransferFinish(transferId, TransferState.COMPLETED, null, savedUri)
         call.respond(HttpStatusCode.OK)
     }
 
     // MARK: storage (SAF)
 
-    private fun saveToTree(folderName: String, fileName: String, source: File): Boolean {
-        val treeUriStr = config.settings.downloadTreeUri ?: return false
-        val tree = DocumentFile.fromTreeUri(context, Uri.parse(treeUriStr)) ?: return false
+    /** Returns the saved file's content uri, or null on failure. */
+    private fun saveToTree(folderName: String, fileName: String, source: File): String? {
+        val treeUriStr = config.settings.downloadTreeUri ?: return null
+        val tree = DocumentFile.fromTreeUri(context, Uri.parse(treeUriStr)) ?: return null
         val safeFolder = folderName.replace('/', '_').ifBlank { "Unknown" }
         val folder = tree.findFile(safeFolder)?.takeIf { it.isDirectory }
-            ?: tree.createDirectory(safeFolder) ?: return false
-        val target = uniqueChild(folder, fileName) ?: return false
-        val out = context.contentResolver.openOutputStream(target.uri) ?: return false
+            ?: tree.createDirectory(safeFolder) ?: return null
+        val target = uniqueChild(folder, fileName) ?: return null
+        val out = context.contentResolver.openOutputStream(target.uri) ?: return null
         out.use { o -> source.inputStream().use { it.copyTo(o) } }
-        return true
+        return target.uri.toString()
     }
 
     private fun uniqueChild(folder: DocumentFile, fileName: String): DocumentFile? {

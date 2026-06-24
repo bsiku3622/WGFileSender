@@ -1,8 +1,11 @@
 package com.jaewonbaek.wgfilesender.data
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Base64
+import androidx.documentfile.provider.DocumentFile
 import com.jaewonbaek.wgfilesender.model.Identity
 import com.jaewonbaek.wgfilesender.model.PairConfirmBody
 import com.jaewonbaek.wgfilesender.model.PairRequestBody
@@ -109,8 +112,8 @@ class AppController(private val context: Context) : ListenerEvents {
 
     override fun onTransferStart(transfer: Transfer) = upsertTransfer(transfer)
     override fun onTransferProgress(id: String, bytes: Long) = updateProgress(id, bytes)
-    override fun onTransferFinish(id: String, state: TransferState, error: String?) =
-        finishTransfer(id, state, error)
+    override fun onTransferFinish(id: String, state: TransferState, error: String?, savedPath: String?) =
+        finishTransfer(id, state, error, savedPath)
 
     // MARK: outgoing pairing
 
@@ -145,7 +148,7 @@ class AppController(private val context: Context) : ListenerEvents {
             val meta = UriUtil.metadata(context, uri)
             val transferId = UUID.randomUUID().toString()
             upsertTransfer(Transfer(transferId, TransferDirection.OUTGOING, peer.displayName,
-                meta.name, meta.size))
+                meta.name, meta.size, localPath = uri.toString()))
             scope.launch {
                 try {
                     sendClient.sendFile(peer, uri, meta.name, meta.size, transferId) { sent ->
@@ -227,13 +230,67 @@ class AppController(private val context: Context) : ListenerEvents {
         transfers.value = transfers.value.map { if (it.id == id) it.copy(transferredBytes = bytes) else it }
     }
 
-    private fun finishTransfer(id: String, state: TransferState, error: String?) {
+    private fun finishTransfer(id: String, state: TransferState, error: String?, savedPath: String? = null) {
         transfers.value = transfers.value.map {
             if (it.id != id) it
             else it.copy(state = state, error = error,
+                localPath = savedPath ?: it.localPath,
                 transferredBytes = if (state == TransferState.COMPLETED) it.totalBytes else it.transferredBytes)
         }
         persistTransfers()
+    }
+
+    // MARK: transfer file actions
+
+    fun transferFileExists(transfer: Transfer): Boolean {
+        val uri = transfer.localPath?.let { Uri.parse(it) } ?: return false
+        return runCatching { DocumentFile.fromSingleUri(context, uri)?.exists() == true }.getOrDefault(false)
+    }
+
+    fun openTransfer(transfer: Transfer) {
+        val uri = transfer.localPath?.let { Uri.parse(it) } ?: return
+        val mime = context.contentResolver.getType(uri) ?: "*/*"
+        val view = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(view, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+
+    fun renameTransfer(transfer: Transfer, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        val uri = transfer.localPath?.let { Uri.parse(it) } ?: return
+        val doc = DocumentFile.fromSingleUri(context, uri) ?: return
+        if (runCatching { doc.renameTo(trimmed) }.getOrDefault(false)) {
+            val newUri = doc.uri.toString()
+            transfers.value = transfers.value.map {
+                if (it.id == transfer.id) it.copy(fileName = trimmed, localPath = newUri) else it
+            }
+            persistTransfers()
+        }
+    }
+
+    fun deleteTransfer(transfer: Transfer) {
+        transfer.localPath?.let { uri ->
+            runCatching { DocumentFile.fromSingleUri(context, Uri.parse(uri))?.delete() }
+        }
+        transfers.value = transfers.value.filterNot { it.id == transfer.id }
+        persistTransfers()
+    }
+
+    fun openDownloadFolder() {
+        val treeUri = settings.value.downloadTreeUri?.let { Uri.parse(it) } ?: return
+        val docUri = runCatching {
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+        }.getOrNull() ?: treeUri
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }
     }
 
     fun clearFinished() {

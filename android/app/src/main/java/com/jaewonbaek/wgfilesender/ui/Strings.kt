@@ -28,7 +28,8 @@ enum class S {
     wantsToPair, confirmPinMatch, decline, accept,
     pairingWith, close, from, to, failed,
     confirmPinOnOther, pairingFailed, checksumMismatch, noDownloadFolder,
-    channelName, channelDesc, notifReady
+    channelName, channelDesc, notifReady,
+    open, delete, renameFile, openFolder
 }
 
 val LocalLang = staticCompositionLocalOf { Lang.EN }
@@ -104,5 +105,9 @@ fun str(key: S, lang: Lang): String {
         S.channelDesc -> if (ko) "WGFileSender가 파일을 받을 수 있게 유지합니다"
         else "Keeps WGFileSender ready to receive files"
         S.notifReady -> if (ko) "포트 %d에서 수신 대기 중" else "Ready to receive on port %d"
+        S.open -> if (ko) "열기" else "Open"
+        S.delete -> if (ko) "삭제" else "Delete"
+        S.renameFile -> if (ko) "파일 이름 변경" else "Rename File"
+        S.openFolder -> if (ko) "폴더 열기" else "Open Folder"
     }
 }

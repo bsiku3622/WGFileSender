@@ -13,7 +13,7 @@ interface ListenerEvents {
     fun onPairConfirm(body: PairConfirmBody)
     fun onTransferStart(transfer: Transfer)
     fun onTransferProgress(id: String, bytes: Long)
-    fun onTransferFinish(id: String, state: TransferState, error: String?)
+    fun onTransferFinish(id: String, state: TransferState, error: String?, savedPath: String? = null)
 }
 
 class PairDeclinedException : Exception("The other device declined")

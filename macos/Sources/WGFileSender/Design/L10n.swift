@@ -38,7 +38,7 @@ enum LKey {
     case openApp, quit, ready
     case from, to, failed
     case confirmPinOnOther, pairingFailed, cantBindPort, checksumMismatch
-    case open, revealInFinder, delete, renameFile
+    case open, revealInFinder, delete, renameFile, openFolder
 }
 
 /// Localized string. Views pass an @AppStorage-tracked `lang` so they re-render on change.
@@ -121,5 +121,6 @@ func L(_ key: LKey, _ lang: Lang = .current) -> String {
     case .revealInFinder:     return ko ? "Finder에서 보기" : "Show in Finder"
     case .delete:             return ko ? "삭제" : "Delete"
     case .renameFile:         return ko ? "파일 이름 변경" : "Rename File"
+    case .openFolder:         return ko ? "폴더 열기" : "Open Folder"
     }
 }

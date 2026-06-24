@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.WGFileSender" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#09090B</item>
+        <item name="android:statusBarColor">#09090B</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

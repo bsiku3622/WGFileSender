@@ -10,6 +10,7 @@ struct TransfersView: View {
             HStack {
                 Text(L(.transfers, lang)).font(.title2).bold()
                 Spacer()
+                Button { state.openDownloadFolder() } label: { Label(L(.openFolder, lang), systemImage: "folder") }
                 Button(L(.clearFinished, lang)) { state.clearFinishedTransfers() }
                     .disabled(!state.transfers.contains { $0.state != .active })
             }
@@ -44,7 +45,7 @@ struct TransferRow: View {
         HStack(spacing: 12) {
             Image(systemName: transfer.direction == .incoming ? "arrow.down.circle" : "arrow.up.circle")
                 .font(.title2)
-                .foregroundStyle(Theme.color(for: transfer.state))
+                .foregroundStyle(iconColor)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 4) {
                 Text(transfer.fileName).font(.body).lineLimit(1)
@@ -89,6 +90,12 @@ struct TransferRow: View {
         case .failed:
             return "\(dir) \(transfer.peerName) · \(transfer.error ?? L(.failed, lang))"
         }
+    }
+
+    /// Green for received, orange for sent; red on failure.
+    private var iconColor: Color {
+        if transfer.state == .failed { return .red }
+        return transfer.direction == .incoming ? .green : .orange
     }
 
     /// Right side: progress while active, otherwise a "⋯" actions menu.

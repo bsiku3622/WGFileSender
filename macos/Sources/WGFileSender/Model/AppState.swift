@@ -242,6 +242,12 @@ final class AppState: ObservableObject {
         store.save(transfers: transfers.filter { $0.state != .active })
     }
 
+    func openDownloadFolder() {
+        let url = URL(fileURLWithPath: settings.downloadRoot)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
+    }
+
     // MARK: transfer file actions
 
     func transferFileExists(_ transfer: Transfer) -> Bool {
