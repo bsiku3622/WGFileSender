@@ -96,7 +96,9 @@ struct PeerRow: View {
                 Button(L(.rename, lang)) { onRename() }
                 Button(L(.remove, lang), role: .destructive) { onRemove() }
             } label: { Image(systemName: "ellipsis.circle") }
-                .menuStyle(.borderlessButton).frame(width: 28)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 28)
         }
         .padding(.vertical, 6)
     }
