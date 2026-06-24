@@ -108,8 +108,10 @@ private fun DevicesScreen(controller: AppController) {
     var renaming by remember { mutableStateOf<PeerDevice?>(null) }
     var pickerPeer by remember { mutableStateOf<PeerDevice?>(null) }
 
+    // GetMultipleContents → ACTION_GET_CONTENT: shows an app chooser (Photos, Files,
+    // Gallery, …) and supports selecting multiple items.
     val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
+        ActivityResultContracts.GetMultipleContents()
     ) { uris ->
         val peer = pickerPeer
         if (peer != null && uris.isNotEmpty()) controller.sendFiles(uris, peer)
@@ -143,7 +145,7 @@ private fun DevicesScreen(controller: AppController) {
                         peer = peer,
                         onSend = {
                             if (shared.isNotEmpty()) controller.sendFiles(shared, peer)
-                            else { pickerPeer = peer; filePicker.launch(arrayOf("*/*")) }
+                            else { pickerPeer = peer; filePicker.launch("*/*") }
                         },
                         onRename = { renaming = peer },
                         onRemove = { controller.removePeer(peer) }
