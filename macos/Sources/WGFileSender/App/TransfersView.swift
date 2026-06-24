@@ -34,8 +34,11 @@ struct TransfersView: View {
 
 struct TransferRow: View {
     let transfer: Transfer
+    @EnvironmentObject var state: AppState
     @AppStorage("appLanguage") private var langRaw = Lang.initial.rawValue
     private var lang: Lang { Lang(rawValue: langRaw) ?? .en }
+    @State private var renaming = false
+    @State private var newName = ""
 
     var body: some View {
         HStack(spacing: 12) {
@@ -55,6 +58,36 @@ struct TransferRow: View {
             statusBadge
         }
         .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { state.openTransferFile(transfer) }
+        .contextMenu {
+            Button(L(.open, lang)) { state.openTransferFile(transfer) }
+                .disabled(!state.transferFileExists(transfer))
+            Button(L(.revealInFinder, lang)) { state.revealTransferFile(transfer) }
+                .disabled(!state.transferFileExists(transfer))
+            if transfer.direction == .incoming {
+                Divider()
+                Button(L(.renameFile, lang)) { newName = transfer.fileName; renaming = true }
+                    .disabled(!state.transferFileExists(transfer))
+                Button(L(.delete, lang), role: .destructive) { state.deleteTransferFile(transfer) }
+            }
+        }
+        .sheet(isPresented: $renaming) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(L(.renameFile, lang)).font(.headline)
+                TextField("", text: $newName).textFieldStyle(.roundedBorder).labelsHidden()
+                HStack {
+                    Spacer()
+                    Button(L(.cancel, lang), role: .cancel) { renaming = false }
+                    Button(L(.save, lang)) {
+                        state.renameTransferFile(transfer, to: newName); renaming = false
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(24).frame(width: 380)
+        }
     }
 
     private var subtitle: String {

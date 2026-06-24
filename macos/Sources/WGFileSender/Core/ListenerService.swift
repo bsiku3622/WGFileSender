@@ -12,7 +12,7 @@ struct ListenerEvents {
     var onPairConfirm: (PairConfirmBody) -> Void
     var onTransferStart: (Transfer) -> Void
     var onTransferProgress: (String, Int64) -> Void
-    var onTransferFinish: (String, TransferState, String?) -> Void
+    var onTransferFinish: (String, TransferState, String?, String?) -> Void   // id, state, error, savedPath
 }
 
 /// Owns the HTTP listener and routes requests per PROTOCOL.md.
@@ -143,13 +143,13 @@ final class ListenerService {
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard digest == expectedHash.lowercased() else {
             try? fm.removeItem(at: partURL)
-            events.onTransferFinish(transferId, .failed, L(.checksumMismatch, .current))
+            events.onTransferFinish(transferId, .failed, L(.checksumMismatch, .current), nil)
             return .status(409)
         }
 
         let finalURL = uniqueURL(in: folder, fileName: fileName)
         try? fm.moveItem(at: partURL, to: finalURL)
-        events.onTransferFinish(transferId, .completed, nil)
+        events.onTransferFinish(transferId, .completed, nil, finalURL.path)
         return .status(200)
     }
 
@@ -180,7 +180,7 @@ final class ListenerService {
         guard fm.fileExists(atPath: candidate.path) else { return candidate }
         let ext = (safe as NSString).pathExtension
         let stem = (safe as NSString).deletingPathExtension
-        var n = 2
+        var n = 1
         repeat {
             let name = ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
             candidate = folder.appendingPathComponent(name)

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 @MainActor
 final class AppState: ObservableObject {
@@ -66,8 +67,8 @@ final class AppState: ObservableObject {
             onTransferProgress: { [weak self] id, bytes in
                 Task { @MainActor in self?.updateProgress(id: id, bytes: bytes) }
             },
-            onTransferFinish: { [weak self] id, state, err in
-                Task { @MainActor in self?.finishTransfer(id: id, state: state, error: err) }
+            onTransferFinish: { [weak self] id, state, err, path in
+                Task { @MainActor in self?.finishTransfer(id: id, state: state, error: err, savedPath: path) }
             }
         )
         listener = ListenerService(config: config, events: events)
@@ -144,7 +145,8 @@ final class AppState: ObservableObject {
             let transferId = UUID().uuidString
             let t = Transfer(id: transferId, direction: .outgoing, peerName: peer.displayName,
                              fileName: url.lastPathComponent, totalBytes: fileSize(url),
-                             transferredBytes: 0, state: .active, startedAt: Date())
+                             transferredBytes: 0, state: .active, startedAt: Date(),
+                             localPath: url.path)
             upsertTransfer(t)
             Task {
                 do {
@@ -221,10 +223,11 @@ final class AppState: ObservableObject {
         transfers[i].transferredBytes = bytes
     }
 
-    private func finishTransfer(id: String, state: TransferState, error: String?) {
+    private func finishTransfer(id: String, state: TransferState, error: String?, savedPath: String? = nil) {
         guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
         transfers[i].state = state
         transfers[i].error = error
+        if let savedPath { transfers[i].localPath = savedPath }
         if state == .completed { transfers[i].transferredBytes = transfers[i].totalBytes }
         persistTransfers()
     }
@@ -237,6 +240,48 @@ final class AppState: ObservableObject {
     /// Persist finished transfers only; in-flight ones are gone after a restart anyway.
     private func persistTransfers() {
         store.save(transfers: transfers.filter { $0.state != .active })
+    }
+
+    // MARK: transfer file actions
+
+    func transferFileExists(_ transfer: Transfer) -> Bool {
+        guard let p = transfer.localPath else { return false }
+        return FileManager.default.fileExists(atPath: p)
+    }
+
+    func openTransferFile(_ transfer: Transfer) {
+        guard transferFileExists(transfer), let p = transfer.localPath else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: p))
+    }
+
+    func revealTransferFile(_ transfer: Transfer) {
+        guard transferFileExists(transfer), let p = transfer.localPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
+    }
+
+    func renameTransferFile(_ transfer: Transfer, to newName: String) {
+        guard let p = transfer.localPath else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let oldURL = URL(fileURLWithPath: p)
+        let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(trimmed)
+        do {
+            try FileManager.default.moveItem(at: oldURL, to: newURL)
+            if let i = transfers.firstIndex(where: { $0.id == transfer.id }) {
+                transfers[i].fileName = trimmed
+                transfers[i].localPath = newURL.path
+                persistTransfers()
+            }
+        } catch { /* keep old entry on failure */ }
+    }
+
+    /// Moves the received file to the Trash and removes the entry.
+    func deleteTransferFile(_ transfer: Transfer) {
+        if let p = transfer.localPath {
+            try? FileManager.default.trashItem(at: URL(fileURLWithPath: p), resultingItemURL: nil)
+        }
+        transfers.removeAll { $0.id == transfer.id }
+        persistTransfers()
     }
 
     // MARK: helpers

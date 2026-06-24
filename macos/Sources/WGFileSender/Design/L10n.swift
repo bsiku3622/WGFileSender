@@ -38,6 +38,7 @@ enum LKey {
     case openApp, quit, ready
     case from, to, failed
     case confirmPinOnOther, pairingFailed, cantBindPort, checksumMismatch
+    case open, revealInFinder, delete, renameFile
 }
 
 /// Localized string. Views pass an @AppStorage-tracked `lang` so they re-render on change.
@@ -116,5 +117,9 @@ func L(_ key: LKey, _ lang: Lang = .current) -> String {
     case .pairingFailed:      return ko ? "페어링 실패: %@" : "Pairing failed: %@"
     case .cantBindPort:       return ko ? "포트 %d 바인딩 실패: %@" : "Couldn't bind port %d: %@"
     case .checksumMismatch:   return ko ? "체크섬 불일치" : "checksum mismatch"
+    case .open:               return ko ? "열기" : "Open"
+    case .revealInFinder:     return ko ? "Finder에서 보기" : "Show in Finder"
+    case .delete:             return ko ? "삭제" : "Delete"
+    case .renameFile:         return ko ? "파일 이름 변경" : "Rename File"
     }
 }

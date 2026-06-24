@@ -43,6 +43,7 @@ struct Transfer: Codable, Identifiable, Equatable {
     var state: TransferState
     var startedAt: Date
     var error: String?
+    var localPath: String? = nil   // sent file's source path, or received file's saved path
 
     var progress: Double {
         totalBytes > 0 ? min(1, Double(transferredBytes) / Double(totalBytes)) : 0

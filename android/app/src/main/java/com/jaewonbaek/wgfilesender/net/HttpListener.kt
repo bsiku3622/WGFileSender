@@ -180,7 +180,7 @@ class HttpListener(
             ?: "application/octet-stream"
         if (folder.findFile(fileName) == null) return folder.createFile(mime, fileName)
         val stem = if (ext.isEmpty()) fileName else fileName.substring(0, fileName.length - ext.length - 1)
-        var n = 2
+        var n = 1
         while (true) {
             val candidate = if (ext.isEmpty()) "$stem ($n)" else "$stem ($n).$ext"
             if (folder.findFile(candidate) == null) return folder.createFile(mime, candidate)
