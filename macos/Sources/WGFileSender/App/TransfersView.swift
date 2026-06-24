@@ -55,23 +55,12 @@ struct TransferRow: View {
                 }
             }
             Spacer()
-            statusBadge
+            trailing
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onTapGesture { state.openTransferFile(transfer) }
-        .contextMenu {
-            Button(L(.open, lang)) { state.openTransferFile(transfer) }
-                .disabled(!state.transferFileExists(transfer))
-            Button(L(.revealInFinder, lang)) { state.revealTransferFile(transfer) }
-                .disabled(!state.transferFileExists(transfer))
-            if transfer.direction == .incoming {
-                Divider()
-                Button(L(.renameFile, lang)) { newName = transfer.fileName; renaming = true }
-                    .disabled(!state.transferFileExists(transfer))
-                Button(L(.delete, lang), role: .destructive) { state.deleteTransferFile(transfer) }
-            }
-        }
+        .contextMenu { menuItems }
         .sheet(isPresented: $renaming) {
             VStack(alignment: .leading, spacing: 16) {
                 Text(L(.renameFile, lang)).font(.headline)
@@ -102,11 +91,31 @@ struct TransferRow: View {
         }
     }
 
-    @ViewBuilder private var statusBadge: some View {
-        switch transfer.state {
-        case .active: Text("\(Int(transfer.progress * 100))%").font(.caption).monospacedDigit().foregroundStyle(.secondary)
-        case .completed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+    /// Right side: progress while active, otherwise a "⋯" actions menu.
+    @ViewBuilder private var trailing: some View {
+        if transfer.state == .active {
+            Text("\(Int(transfer.progress * 100))%")
+                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        } else {
+            Menu { menuItems } label: {
+                Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 28)
+        }
+    }
+
+    @ViewBuilder private var menuItems: some View {
+        Button(L(.open, lang)) { state.openTransferFile(transfer) }
+            .disabled(!state.transferFileExists(transfer))
+        Button(L(.revealInFinder, lang)) { state.revealTransferFile(transfer) }
+            .disabled(!state.transferFileExists(transfer))
+        if transfer.direction == .incoming {
+            Divider()
+            Button(L(.renameFile, lang)) { newName = transfer.fileName; renaming = true }
+                .disabled(!state.transferFileExists(transfer))
+            Button(L(.delete, lang), role: .destructive) { state.deleteTransferFile(transfer) }
         }
     }
 }
