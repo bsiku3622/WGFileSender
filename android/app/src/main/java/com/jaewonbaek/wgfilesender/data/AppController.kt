@@ -33,6 +33,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
@@ -54,7 +55,8 @@ class AppController(private val context: Context) : ListenerEvents {
     val transfers = MutableStateFlow(store.loadTransfers())
     /** Smoothed transfer rate (bytes/sec) per active transfer id, for the speed/ETA readout. */
     val transferRates = MutableStateFlow<Map<String, Double>>(emptyMap())
-    private val rateSamples = mutableMapOf<String, Pair<Long, Long>>()   // bytes to epochMillis
+    // Touched from multiple IO coroutines + Ktor threads, so use a concurrent map.
+    private val rateSamples = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Long>>()   // bytes to epochMillis
     val selectedTab = MutableStateFlow(0)   // 0 Devices · 1 Transfers · 2 Settings
     val pendingPairing = MutableStateFlow<PendingPairing?>(null)
     val outgoingPairing = MutableStateFlow<OutgoingPairing?>(null)
@@ -153,9 +155,10 @@ class AppController(private val context: Context) : ListenerEvents {
             try {
                 val resp = sendClient.requestPair(address, UUID.randomUUID().toString(), pin)
                 val ourToken = randomToken()   // tokenIn we issue for the peer
+                // Confirm first; persist the peer only once the symmetric exchange succeeds.
+                sendClient.confirmPair(address, resp.token, ourToken)
                 upsertPeer(PeerDevice(resp.deviceId, resp.deviceName, null, address,
                     tokenOut = resp.token, tokenIn = ourToken, lastSeen = now()))
-                sendClient.confirmPair(address, resp.token, ourToken)
                 outgoingPairing.value = null
             } catch (e: Exception) {
                 outgoingPairing.value = outgoingPairing.value
@@ -242,7 +245,7 @@ class AppController(private val context: Context) : ListenerEvents {
 
     // Cap concurrent uploads so sending many files doesn't swamp the receiver.
     private val sendSemaphore = Semaphore(4)
-    private val activeSendJobs = mutableMapOf<String, Job>()
+    private val activeSendJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
     fun sendFiles(uris: List<Uri>, peer: PeerDevice) {
         if (uris.isNotEmpty()) selectedTab.value = 1   // jump to Transfers
@@ -305,8 +308,8 @@ class AppController(private val context: Context) : ListenerEvents {
 
     /** Keeps the row active but flags that we're reconnecting between auto-retry attempts. */
     private fun setRetrying(id: String) {
-        transfers.value = transfers.value.map {
-            if (it.id == id) it.copy(error = str(S.retrying, language.value)) else it
+        transfers.update { list ->
+            list.map { if (it.id == id) it.copy(error = str(S.retrying, language.value)) else it }
         }
         clearRate(id)   // rate restarts when bytes flow again
     }
@@ -330,16 +333,14 @@ class AppController(private val context: Context) : ListenerEvents {
 
     /** queued → active once a concurrency slot opens. */
     private fun markActive(id: String) {
-        transfers.value = transfers.value.map {
-            if (it.id == id && it.state == TransferState.QUEUED) it.copy(state = TransferState.ACTIVE) else it
+        transfers.update { list ->
+            list.map { if (it.id == id && it.state == TransferState.QUEUED) it.copy(state = TransferState.ACTIVE) else it }
         }
     }
 
     /** Corrects totalBytes once the sender has measured the real stream length. */
     private fun updateTotal(id: String, total: Long) {
-        transfers.value = transfers.value.map {
-            if (it.id == id) it.copy(totalBytes = total) else it
-        }
+        transfers.update { list -> list.map { if (it.id == id) it.copy(totalBytes = total) else it } }
     }
 
     fun setSharedUris(uris: List<Uri>) { sharedUris.value = uris }
@@ -409,14 +410,16 @@ class AppController(private val context: Context) : ListenerEvents {
     // MARK: transfers
 
     private fun upsertTransfer(t: Transfer) {
-        val list = transfers.value.toMutableList()
-        val i = list.indexOfFirst { it.id == t.id }
-        if (i >= 0) list[i] = t else list.add(0, t)
-        transfers.value = list
+        transfers.update { cur ->
+            val list = cur.toMutableList()
+            val i = list.indexOfFirst { it.id == t.id }
+            if (i >= 0) list[i] = t else list.add(0, t)
+            list
+        }
     }
 
     private fun updateProgress(id: String, bytes: Long) {
-        transfers.value = transfers.value.map { if (it.id == id) it.copy(transferredBytes = bytes) else it }
+        transfers.update { list -> list.map { if (it.id == id) it.copy(transferredBytes = bytes) else it } }
         // Instantaneous rate, smoothed with an EMA and sampled at most ~3x/sec.
         val t = now()
         val prev = rateSamples[id]
@@ -439,11 +442,13 @@ class AppController(private val context: Context) : ListenerEvents {
     }
 
     private fun finishTransfer(id: String, state: TransferState, error: String?, savedPath: String? = null) {
-        transfers.value = transfers.value.map {
-            if (it.id != id) it
-            else it.copy(state = state, error = error,
-                localPath = savedPath ?: it.localPath,
-                transferredBytes = if (state == TransferState.COMPLETED) it.totalBytes else it.transferredBytes)
+        transfers.update { list ->
+            list.map {
+                if (it.id != id) it
+                else it.copy(state = state, error = error,
+                    localPath = savedPath ?: it.localPath,
+                    transferredBytes = if (state == TransferState.COMPLETED) it.totalBytes else it.transferredBytes)
+            }
         }
         clearRate(id)
         persistTransfers()

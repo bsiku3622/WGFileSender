@@ -86,7 +86,8 @@ class UpdateService(private val context: Context) {
                 if (t > 0) onProgress((sent.toFloat() / t).coerceIn(0f, 1f))
             }
         }.body()
-        val file = File(context.cacheDir, info.assetName ?: "update.apk")
+        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val file = File(dir, info.assetName ?: "update.apk")
         file.writeBytes(bytes)
         return file
     }

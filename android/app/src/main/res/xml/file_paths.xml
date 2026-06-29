@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- The update APK is written to cacheDir; expose it to the package installer. -->
-    <cache-path name="updates" path="." />
+    <!-- Only the updates subdir is shared with the package installer, not all of cacheDir. -->
+    <cache-path name="updates" path="updates/" />
 </paths>

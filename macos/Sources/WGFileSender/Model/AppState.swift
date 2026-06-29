@@ -197,12 +197,14 @@ final class AppState: ObservableObject {
             do {
                 let resp = try await sendClient.requestPair(address: address, sessionId: sessionId, pin: pin)
                 let ourToken = Self.randomToken()   // tokenIn we issue for the peer
+                // Confirm first; only persist the peer once the symmetric exchange succeeds,
+                // so a confirm failure doesn't leave a "failed" prompt over a working peer.
+                try await sendClient.confirmPair(address: address, tokenOut: resp.token,
+                                                 ourTokenForPeer: ourToken)
                 let peer = PeerDevice(peerId: resp.deviceId, peerName: resp.deviceName, localName: nil,
                                       peerAddress: address, tokenOut: resp.token, tokenIn: ourToken,
                                       lastSeen: Date())
                 upsertPeer(peer)
-                try await sendClient.confirmPair(address: address, tokenOut: resp.token,
-                                                 ourTokenForPeer: ourToken)
                 outgoingPairing = nil
             } catch {
                 outgoingPairing?.status = String(format: L(.pairingFailed, .current), error.localizedDescription)
