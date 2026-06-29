@@ -18,6 +18,7 @@ import com.jaewonbaek.wgfilesender.model.TransferDirection
 import com.jaewonbaek.wgfilesender.model.TransferState
 import com.jaewonbaek.wgfilesender.net.HttpListener
 import com.jaewonbaek.wgfilesender.net.ListenerEvents
+import com.jaewonbaek.wgfilesender.net.ListenerService
 import com.jaewonbaek.wgfilesender.net.SendClient
 import com.jaewonbaek.wgfilesender.net.UpdateService
 import com.jaewonbaek.wgfilesender.net.UpdateState
@@ -373,6 +374,16 @@ class AppController(private val context: Context) : ListenerEvents {
         config.identity = identity.value
     }
 
+    /** Toggles the background-receive foreground service. Off → service stops and the
+     *  notification disappears (no files received while off). */
+    fun setBackgroundReceive(enabled: Boolean) {
+        settings.value = settings.value.copy(backgroundReceive = enabled)
+        persistSettings()
+        val intent = Intent(context, ListenerService::class.java)
+        if (enabled) androidx.core.content.ContextCompat.startForegroundService(context, intent)
+        else context.stopService(intent)
+    }
+
     fun setPort(port: Int) {
         settings.value = settings.value.copy(port = port)
         persistSettings()
@@ -467,6 +478,12 @@ class AppController(private val context: Context) : ListenerEvents {
         transfer.localPath?.let { uri ->
             runCatching { DocumentFile.fromSingleUri(context, Uri.parse(uri))?.delete() }
         }
+        transfers.value = transfers.value.filterNot { it.id == transfer.id }
+        persistTransfers()
+    }
+
+    /** Removes a row without touching any file (sent transfers keep their source). */
+    fun removeTransfer(transfer: Transfer) {
         transfers.value = transfers.value.filterNot { it.id == transfer.id }
         persistTransfers()
     }

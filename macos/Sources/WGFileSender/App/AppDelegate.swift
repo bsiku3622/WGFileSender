@@ -86,8 +86,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+            showPopover()
+        }
+    }
+
+    /// Brings the app forward and opens the menu-bar popover. Used both for the status-item
+    /// click and when the app is re-opened (Dock/Finder/"Open with"), which otherwise does
+    /// nothing visible for a menu-bar-only app.
+    private func showPopover() {
+        guard let button = statusItem?.button else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    /// Re-opening the app (double-click, "Open with", `open`) surfaces the popover.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPopover()
+        return true
     }
 }

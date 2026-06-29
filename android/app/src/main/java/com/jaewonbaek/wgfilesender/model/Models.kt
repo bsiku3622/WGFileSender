@@ -70,7 +70,8 @@ data class PeerDevice(
 @Serializable
 data class Settings(
     val downloadTreeUri: String? = null,
-    val port: Int = DEFAULT_PORT
+    val port: Int = DEFAULT_PORT,
+    val backgroundReceive: Boolean = true
 )
 
 @Serializable

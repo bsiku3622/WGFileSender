@@ -44,6 +44,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -56,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -223,6 +225,10 @@ private fun TransfersScreen(controller: AppController) {
                 ShadButton(t(S.clear), { controller.clearFinished() }, variant = BtnVariant.Ghost)
             }
         }
+        if (transfers.isNotEmpty()) {
+            TransfersSummary(transfers)
+            Spacer(Modifier.height(10.dp))
+        }
         if (transfers.isEmpty()) {
             EmptyState(Icons.Rounded.Inbox, t(S.noTransfers), t(S.noTransfersHint))
         } else {
@@ -230,6 +236,33 @@ private fun TransfersScreen(controller: AppController) {
                 items(transfers, key = { it.id }) { TransferCard(controller, it, rates[it.id]) }
             }
         }
+    }
+}
+
+@Composable
+private fun TransfersSummary(transfers: List<Transfer>) {
+    val active = transfers.count { it.state == TransferState.ACTIVE }
+    val queued = transfers.count { it.state == TransferState.QUEUED }
+    val done = transfers.filter { it.state == TransferState.COMPLETED }
+    val failed = transfers.count { it.state == TransferState.FAILED || it.state == TransferState.INTERRUPTED }
+    val doneBytes = done.sumOf { it.totalBytes }
+    ShadCard {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (active > 0) StatChip(t(S.statActive), active, Shad.accent)
+            if (queued > 0) StatChip(t(S.queued), queued, Shad.mutedForeground)
+            StatChip(t(S.statDone), done.size, Shad.received, if (done.isEmpty()) null else doneBytes.humanBytes())
+            if (failed > 0) StatChip(t(S.failed), failed, Shad.destructive)
+        }
+    }
+}
+
+@Composable
+private fun StatChip(label: String, count: Int, color: Color, detail: String? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(color))
+        Text("$count", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, fontFamily = FontFamily.Monospace)
+        Text(label, color = Shad.mutedForeground, fontSize = 12.sp)
+        if (detail != null) Text("· $detail", color = Shad.mutedForeground, fontSize = 12.sp)
     }
 }
 
@@ -316,6 +349,12 @@ private fun TransferCard(controller: AppController, transfer: Transfer, rate: Do
                                     onClick = { menu = false; newName = transfer.fileName; renaming = true })
                                 DropdownMenuItem(text = { Text(t(S.delete)) },
                                     onClick = { menu = false; controller.deleteTransfer(transfer) })
+                            } else if (transfer.state == TransferState.ACTIVE || transfer.state == TransferState.QUEUED) {
+                                DropdownMenuItem(text = { Text(t(S.cancel)) },
+                                    onClick = { menu = false; controller.cancelTransfer(transfer) })
+                            } else {
+                                DropdownMenuItem(text = { Text(t(S.removeFromList)) },
+                                    onClick = { menu = false; controller.removeTransfer(transfer) })
                             }
                         }
                     }
@@ -417,6 +456,16 @@ private fun SettingsScreen(controller: AppController) {
                     ShadButton(t(S.apply), {
                         port.trim().toIntOrNull()?.takeIf { it in 1..65535 }?.let { controller.setPort(it) }
                     }, variant = BtnVariant.Outline)
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(t(S.backgroundReceive), fontSize = 14.sp)
+                        Text(t(S.backgroundReceiveHint), color = Shad.mutedForeground, fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Switch(checked = settings.backgroundReceive,
+                        onCheckedChange = { controller.setBackgroundReceive(it) })
                 }
             }
         }

@@ -26,7 +26,9 @@ class MainActivity : ComponentActivity() {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        ContextCompat.startForegroundService(this, Intent(this, ListenerService::class.java))
+        if (controller.settings.value.backgroundReceive) {
+            ContextCompat.startForegroundService(this, Intent(this, ListenerService::class.java))
+        }
         handleShare(intent)
 
         setContent {

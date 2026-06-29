@@ -442,6 +442,13 @@ final class AppState: ObservableObject {
         } catch { /* keep old entry on failure */ }
     }
 
+    /// Removes a row from the list without touching any file (used for sent transfers,
+    /// whose "file" is the untouched local source).
+    func removeTransfer(_ transfer: Transfer) {
+        transfers.removeAll { $0.id == transfer.id }
+        persistTransfers()
+    }
+
     /// Moves the received file to the Trash and removes the entry.
     func deleteTransferFile(_ transfer: Transfer) {
         if let p = transfer.localPath {

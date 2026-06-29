@@ -26,6 +26,11 @@ struct TransfersView: View {
             .padding(.horizontal, 16).padding(.vertical, 12)
             Divider()
 
+            if !state.transfers.isEmpty {
+                summaryBar.padding(.horizontal, 16).padding(.vertical, 8)
+                Divider()
+            }
+
             if state.transfers.isEmpty {
                 VStack(spacing: 10) {
                     Spacer()
@@ -38,6 +43,32 @@ struct TransfersView: View {
                 List(state.transfers) { TransferRow(transfer: $0) }
                     .listStyle(.inset)
             }
+        }
+    }
+
+    /// At-a-glance counts (and completed volume) across the transfer list.
+    @ViewBuilder private var summaryBar: some View {
+        let t = state.transfers
+        let active = t.filter { $0.state == .active }.count
+        let queued = t.filter { $0.state == .queued }.count
+        let done = t.filter { $0.state == .completed }
+        let failed = t.filter { $0.state == .failed || $0.state == .interrupted }.count
+        let doneBytes = done.reduce(Int64(0)) { $0 + $1.totalBytes }
+        HStack(spacing: 16) {
+            if active > 0 { stat(L(.statActive, lang), active, .accentColor) }
+            if queued > 0 { stat(L(.queued, lang), queued, .secondary) }
+            stat(L(.statDone, lang), done.count, .green, detail: done.isEmpty ? nil : doneBytes.humanBytes)
+            if failed > 0 { stat(L(.failed, lang), failed, .red) }
+            Spacer()
+        }
+    }
+
+    private func stat(_ label: String, _ count: Int, _ color: Color, detail: String? = nil) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text("\(count)").font(.callout).fontWeight(.semibold).monospacedDigit()
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            if let detail { Text("· \(detail)").font(.caption).foregroundStyle(.secondary) }
         }
     }
 }
@@ -176,6 +207,13 @@ struct TransferRow: View {
             Button(L(.renameFile, lang)) { newName = transfer.fileName; renaming = true }
                 .disabled(!state.transferFileExists(transfer))
             Button(L(.delete, lang), role: .destructive) { state.deleteTransferFile(transfer) }
+        } else {
+            Divider()
+            if transfer.state == .active || transfer.state == .queued {
+                Button(L(.cancel, lang), role: .destructive) { state.cancelTransfer(transfer) }
+            } else {
+                Button(L(.removeFromList, lang), role: .destructive) { state.removeTransfer(transfer) }
+            }
         }
     }
 }

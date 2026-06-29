@@ -41,7 +41,8 @@ enum LKey {
     case open, revealInFinder, delete, renameFile, openFolder
     case resend, canceled
     case resume, interrupted, connectionLost, retrying, waitingToResume
-    case remaining, paused, queued
+    case remaining, paused, queued, removeFromList
+    case statActive, statDone
     case updates, currentVersion, checkForUpdates, checkingForUpdates, upToDate
     case updateAvailable, whatsNew, downloadUpdate, downloadingUpdate, openToInstall
     case updateDownloadedHint, updateCheckFailed, retry, later
@@ -138,6 +139,9 @@ func L(_ key: LKey, _ lang: Lang = .current) -> String {
     case .remaining:          return ko ? "남음" : "left"
     case .paused:             return ko ? "일시정지됨" : "Paused"
     case .queued:             return ko ? "대기 중" : "Queued"
+    case .removeFromList:     return ko ? "목록에서 제거" : "Remove from List"
+    case .statActive:         return ko ? "전송 중" : "Active"
+    case .statDone:           return ko ? "완료" : "Done"
     case .updates:            return ko ? "업데이트" : "Updates"
     case .currentVersion:     return ko ? "현재 버전" : "Current version"
     case .checkForUpdates:    return ko ? "업데이트 확인" : "Check for Updates"
