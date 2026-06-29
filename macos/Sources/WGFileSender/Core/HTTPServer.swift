@@ -27,7 +27,8 @@ struct HTTPResponse {
 }
 
 /// Pulls the request body off the connection in chunks (streaming, never fully buffered).
-final class BodyStream {
+/// Used serially by a single connection's `serve` loop, so unchecked Sendable is safe.
+final class BodyStream: @unchecked Sendable {
     private let connection: NWConnection
     private var leftover: Data
     private var remaining: Int
@@ -38,6 +39,10 @@ final class BodyStream {
         self.remaining = contentLength
     }
 
+    /// True once every byte declared by Content-Length has been delivered. When `read()`
+    /// returns nil with this still false, the peer hung up mid-body (incomplete transfer).
+    var isComplete: Bool { remaining <= 0 }
+
     func read() async -> Data? {
         if remaining <= 0 { return nil }
         if !leftover.isEmpty {
@@ -47,11 +52,14 @@ final class BodyStream {
             remaining -= take
             return Data(chunk)
         }
+        let want = min(65536, remaining)
         return await withCheckedContinuation { cont in
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: want) { data, _, _, _ in
                 if let data, !data.isEmpty {
-                    self.remaining -= data.count
-                    cont.resume(returning: data)
+                    // Guard against over-read: never hand back more than Content-Length.
+                    let take = min(data.count, self.remaining)
+                    self.remaining -= take
+                    cont.resume(returning: take == data.count ? data : data.prefix(take))
                 } else {
                     cont.resume(returning: nil)
                 }

@@ -30,7 +30,10 @@ struct PeerDevice: Codable, Identifiable, Equatable {
 }
 
 enum TransferDirection: String, Codable { case incoming, outgoing }
-enum TransferState: String, Codable { case active, completed, failed }
+/// `queued` = waiting for a concurrency slot before it starts. `interrupted` = stopped
+/// before finishing but resumable (partial bytes kept on the receiver). `failed` = a
+/// terminal error (e.g. hash mismatch on a fully-received file).
+enum TransferState: String, Codable { case queued, active, completed, failed, interrupted }
 
 /// One in-flight or finished file transfer, shown in the Transfers tab.
 struct Transfer: Codable, Identifiable, Equatable {

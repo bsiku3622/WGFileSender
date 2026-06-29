@@ -122,16 +122,33 @@ final class ListenerService {
         let partURL = partURL(transferId: transferId)
         try? fm.createDirectory(at: partURL.deletingLastPathComponent(),
                                 withIntermediateDirectories: true)
-        fm.createFile(atPath: partURL.path, contents: nil)
+
+        // Resume: a Content-Range start that matches the bytes already on disk means we
+        // append; anything else (or no range) starts the .part fresh.
+        let onDisk = partFileSize(transferId: transferId)
+        var startOffset: Int64 = 0
+        if let range = req.header("content-range"), let s = Self.rangeStart(range), s > 0, s == onDisk {
+            startOffset = s
+        }
+        if startOffset == 0 {
+            fm.createFile(atPath: partURL.path, contents: nil)
+        }
         guard let handle = try? FileHandle(forWritingTo: partURL) else { return .status(500) }
+
+        // Prime the hasher with bytes already written, then position at the append point.
+        var hasher = SHA256()
+        if startOffset > 0, let rh = try? FileHandle(forReadingFrom: partURL) {
+            while case let d = rh.readData(ofLength: 1 << 20), !d.isEmpty { hasher.update(data: d) }
+            try? rh.close()
+            try? handle.seek(toOffset: UInt64(startOffset))
+        }
 
         events.onTransferStart(Transfer(
             id: transferId, direction: .incoming, peerName: peer.displayName,
-            fileName: fileName, totalBytes: totalBytes, transferredBytes: 0,
+            fileName: fileName, totalBytes: totalBytes, transferredBytes: startOffset,
             state: .active, startedAt: Date()))
 
-        var hasher = SHA256()
-        var received: Int64 = 0
+        var received = startOffset
         while let chunk = await body.read() {
             try? handle.write(contentsOf: chunk)
             hasher.update(data: chunk)
@@ -140,9 +157,15 @@ final class ListenerService {
         }
         try? handle.close()
 
+        // Peer hung up before delivering the whole body — keep the .part for a later resume.
+        guard body.isComplete else {
+            events.onTransferFinish(transferId, .interrupted, L(.connectionLost, .current), nil)
+            return .status(400)
+        }
+
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard digest == expectedHash.lowercased() else {
-            try? fm.removeItem(at: partURL)
+            try? fm.removeItem(at: partURL)   // a fully-received file that hashes wrong is corrupt
             events.onTransferFinish(transferId, .failed, L(.checksumMismatch, .current), nil)
             return .status(409)
         }
@@ -151,6 +174,13 @@ final class ListenerService {
         try? fm.moveItem(at: partURL, to: finalURL)
         events.onTransferFinish(transferId, .completed, nil, finalURL.path)
         return .status(200)
+    }
+
+    /// Parses the start byte from a `bytes <start>-<end>/<total>` Content-Range header.
+    private static func rangeStart(_ header: String) -> Int64? {
+        let trimmed = header.lowercased().replacingOccurrences(of: "bytes ", with: "")
+        guard let dash = trimmed.firstIndex(of: "-") else { return nil }
+        return Int64(trimmed[trimmed.startIndex..<dash])
     }
 
     // MARK: file helpers

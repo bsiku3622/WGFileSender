@@ -3,8 +3,10 @@ package com.jaewonbaek.wgfilesender.data
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import android.util.Base64
+import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.jaewonbaek.wgfilesender.model.Identity
 import com.jaewonbaek.wgfilesender.model.PairConfirmBody
@@ -17,6 +19,8 @@ import com.jaewonbaek.wgfilesender.model.TransferState
 import com.jaewonbaek.wgfilesender.net.HttpListener
 import com.jaewonbaek.wgfilesender.net.ListenerEvents
 import com.jaewonbaek.wgfilesender.net.SendClient
+import com.jaewonbaek.wgfilesender.net.UpdateService
+import com.jaewonbaek.wgfilesender.net.UpdateState
 import com.jaewonbaek.wgfilesender.ui.Lang
 import com.jaewonbaek.wgfilesender.ui.S
 import com.jaewonbaek.wgfilesender.ui.str
@@ -25,6 +29,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -46,6 +51,9 @@ class AppController(private val context: Context) : ListenerEvents {
     val peers = MutableStateFlow(store.loadPeers())
     val settings = MutableStateFlow(store.loadSettings())
     val transfers = MutableStateFlow(store.loadTransfers())
+    /** Smoothed transfer rate (bytes/sec) per active transfer id, for the speed/ETA readout. */
+    val transferRates = MutableStateFlow<Map<String, Double>>(emptyMap())
+    private val rateSamples = mutableMapOf<String, Pair<Long, Long>>()   // bytes to epochMillis
     val selectedTab = MutableStateFlow(0)   // 0 Devices · 1 Transfers · 2 Settings
     val pendingPairing = MutableStateFlow<PendingPairing?>(null)
     val outgoingPairing = MutableStateFlow<OutgoingPairing?>(null)
@@ -53,13 +61,20 @@ class AppController(private val context: Context) : ListenerEvents {
     val listenerError = MutableStateFlow<String?>(null)
     val sharedUris = MutableStateFlow<List<Uri>>(emptyList())
     val language = MutableStateFlow(Lang.from(store.loadLanguage()))
+    val updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
 
     private val config = SharedConfig(identity.value, peers.value, settings.value)
     private val sendClient = SendClient(context, config)
     private val listener = HttpListener(context, config, this)
+    private val updateService = UpdateService(context)
     private var pairDeferred: CompletableDeferred<String?>? = null
 
-    init { config.language = language.value }
+    val appVersion: String get() = updateService.currentVersion
+
+    init {
+        config.language = language.value
+        checkForUpdates(manual = false)   // quiet check once per process start
+    }
 
     fun setLanguage(lang: Lang) {
         language.value = lang
@@ -142,6 +157,76 @@ class AppController(private val context: Context) : ListenerEvents {
 
     fun dismissOutgoingPair() { outgoingPairing.value = null }
 
+    // MARK: updates
+
+    fun checkForUpdates(manual: Boolean) {
+        when (updateState.value) {
+            is UpdateState.Checking, is UpdateState.Downloading -> return
+            else -> {}
+        }
+        updateState.value = UpdateState.Checking
+        scope.launch {
+            try {
+                val info = updateService.checkForUpdate()
+                updateState.value = when {
+                    info != null -> UpdateState.Available(info)
+                    manual -> UpdateState.UpToDate
+                    else -> UpdateState.Idle
+                }
+            } catch (e: Exception) {
+                updateState.value = if (manual) UpdateState.Failed(e.message ?: "error") else UpdateState.Idle
+            }
+        }
+    }
+
+    fun downloadUpdate() {
+        val st = updateState.value
+        if (st !is UpdateState.Available) return
+        val info = st.info
+        if (info.assetUrl == null) { openUrl(info.pageUrl); return }   // no APK asset → open page
+        updateState.value = UpdateState.Downloading(0f)
+        scope.launch {
+            try {
+                val file = updateService.download(info) { p ->
+                    if (updateState.value is UpdateState.Downloading) updateState.value = UpdateState.Downloading(p)
+                }
+                updateState.value = UpdateState.Downloaded(file)
+            } catch (e: Exception) {
+                updateState.value = UpdateState.Failed(e.message ?: "error")
+            }
+        }
+    }
+
+    fun installUpdate() {
+        val st = updateState.value
+        if (st !is UpdateState.Downloaded) return
+        // Android 8+ gates sideload installs behind a per-app "install unknown apps" permission.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            runCatching {
+                context.startActivity(
+                    Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+            return
+        }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", st.file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }
+    }
+
+    fun dismissUpdate() { updateState.value = UpdateState.Idle }
+
+    private fun openUrl(url: String) {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+
     // MARK: sending
 
     fun setTab(index: Int) { selectedTab.value = index }
@@ -156,26 +241,50 @@ class AppController(private val context: Context) : ListenerEvents {
             val meta = UriUtil.metadata(context, uri)
             val transferId = UUID.randomUUID().toString()
             upsertTransfer(Transfer(transferId, TransferDirection.OUTGOING, peer.displayName,
-                meta.name, meta.size, localPath = uri.toString(), peerId = peer.peerId))
-            launchSend(transferId, peer, uri, meta.name, meta.size)
+                meta.name, meta.size, state = TransferState.QUEUED,
+                localPath = uri.toString(), peerId = peer.peerId))
+            launchSend(transferId, peer, uri, meta.name)
         }
         sharedUris.value = emptyList()
     }
 
-    private fun launchSend(transferId: String, peer: PeerDevice, uri: Uri, name: String, size: Long) {
+    private fun launchSend(
+        transferId: String, peer: PeerDevice, uri: Uri, name: String,
+        resumeFirst: Boolean = false
+    ) {
         val job = scope.launch {
             try {
                 sendSemaphore.withPermit {
-                    try {
-                        sendClient.sendFile(peer, uri, name, size, transferId) { sent ->
-                            updateProgress(transferId, sent)
+                    markActive(transferId)   // queued → active once a slot frees up
+                    var attempt = 0
+                    var tryResume = resumeFirst
+                    while (true) {
+                        try {
+                            sendClient.sendFile(peer, uri, name, transferId, tryResume,
+                                onSize = { updateTotal(transferId, it) }) { sent ->
+                                updateProgress(transferId, sent)
+                            }
+                            finishTransfer(transferId, TransferState.COMPLETED, null)
+                            break
+                        } catch (e: CancellationException) {
+                            // Cancellation is recorded as resumable, then propagated.
+                            finishTransfer(transferId, TransferState.INTERRUPTED, str(S.canceled, language.value))
+                            throw e
+                        } catch (e: Exception) {
+                            attempt++
+                            if (attempt > MAX_SEND_RETRIES) {
+                                finishTransfer(transferId, TransferState.INTERRUPTED, e.message)
+                                break
+                            }
+                            setRetrying(transferId)
+                            try {
+                                delay(1500)   // brief backoff, then resume from the receiver's last byte
+                            } catch (e: CancellationException) {
+                                finishTransfer(transferId, TransferState.INTERRUPTED, str(S.canceled, language.value))
+                                throw e
+                            }
+                            tryResume = true
                         }
-                        finishTransfer(transferId, TransferState.COMPLETED, null)
-                    } catch (e: CancellationException) {
-                        finishTransfer(transferId, TransferState.FAILED, str(S.canceled, language.value))
-                        throw e
-                    } catch (e: Exception) {
-                        finishTransfer(transferId, TransferState.FAILED, e.message)
                     }
                 }
             } finally {
@@ -185,19 +294,43 @@ class AppController(private val context: Context) : ListenerEvents {
         activeSendJobs[transferId] = job
     }
 
+    /** Keeps the row active but flags that we're reconnecting between auto-retry attempts. */
+    private fun setRetrying(id: String) {
+        transfers.value = transfers.value.map {
+            if (it.id == id) it.copy(error = str(S.retrying, language.value)) else it
+        }
+        clearRate(id)   // rate restarts when bytes flow again
+    }
+
+    /** Cancels an in-flight transfer; partial bytes are kept on the receiver for resume. */
     fun cancelTransfer(transfer: Transfer) {
         activeSendJobs[transfer.id]?.cancel()
     }
 
-    fun resendTransfer(transfer: Transfer) {
+    /** Resumes an interrupted/failed transfer from where the receiver left off. */
+    fun resumeTransfer(transfer: Transfer) {
         if (transfer.direction != TransferDirection.OUTGOING) return
         val uri = transfer.localPath?.let { Uri.parse(it) } ?: return
         val peer = peers.value.firstOrNull { it.peerId == transfer.peerId } ?: return
         val meta = UriUtil.metadata(context, uri)
         transfers.value = transfers.value.map {
-            if (it.id == transfer.id) it.copy(state = TransferState.ACTIVE, error = null, transferredBytes = 0) else it
+            if (it.id == transfer.id) it.copy(state = TransferState.ACTIVE, error = null) else it
         }
-        launchSend(transfer.id, peer, uri, meta.name, meta.size)
+        launchSend(transfer.id, peer, uri, meta.name, resumeFirst = true)
+    }
+
+    /** queued → active once a concurrency slot opens. */
+    private fun markActive(id: String) {
+        transfers.value = transfers.value.map {
+            if (it.id == id && it.state == TransferState.QUEUED) it.copy(state = TransferState.ACTIVE) else it
+        }
+    }
+
+    /** Corrects totalBytes once the sender has measured the real stream length. */
+    private fun updateTotal(id: String, total: Long) {
+        transfers.value = transfers.value.map {
+            if (it.id == id) it.copy(totalBytes = total) else it
+        }
     }
 
     fun setSharedUris(uris: List<Uri>) { sharedUris.value = uris }
@@ -265,6 +398,25 @@ class AppController(private val context: Context) : ListenerEvents {
 
     private fun updateProgress(id: String, bytes: Long) {
         transfers.value = transfers.value.map { if (it.id == id) it.copy(transferredBytes = bytes) else it }
+        // Instantaneous rate, smoothed with an EMA and sampled at most ~3x/sec.
+        val t = now()
+        val prev = rateSamples[id]
+        if (prev == null) {
+            rateSamples[id] = bytes to t
+        } else {
+            val dt = (t - prev.second) / 1000.0
+            if (dt >= 0.3) {
+                val inst = (bytes - prev.first) / dt
+                val smoothed = transferRates.value[id]?.let { it * 0.6 + inst * 0.4 } ?: inst
+                transferRates.value = transferRates.value + (id to maxOf(0.0, smoothed))
+                rateSamples[id] = bytes to t
+            }
+        }
+    }
+
+    private fun clearRate(id: String) {
+        if (id in transferRates.value) transferRates.value = transferRates.value - id
+        rateSamples.remove(id)
     }
 
     private fun finishTransfer(id: String, state: TransferState, error: String?, savedPath: String? = null) {
@@ -274,6 +426,7 @@ class AppController(private val context: Context) : ListenerEvents {
                 localPath = savedPath ?: it.localPath,
                 transferredBytes = if (state == TransferState.COMPLETED) it.totalBytes else it.transferredBytes)
         }
+        clearRate(id)
         persistTransfers()
     }
 
@@ -331,18 +484,26 @@ class AppController(private val context: Context) : ListenerEvents {
     }
 
     fun clearFinished() {
-        transfers.value = transfers.value.filter { it.state == TransferState.ACTIVE }
+        // Keep active and interrupted (resumable) rows; clear only completed/failed.
+        transfers.value = transfers.value.filterNot {
+            it.state == TransferState.COMPLETED || it.state == TransferState.FAILED
+        }
         persistTransfers()
     }
 
     /** Persist finished transfers only; in-flight ones are gone after a restart anyway. */
     private fun persistTransfers() {
-        store.saveTransfers(transfers.value.filter { it.state != TransferState.ACTIVE })
+        store.saveTransfers(transfers.value.filterNot {
+            it.state == TransferState.ACTIVE || it.state == TransferState.QUEUED
+        })
     }
 
     val downloadFolderSet: Boolean get() = settings.value.downloadTreeUri != null
 
     companion object {
+        /** Auto-retry attempts (each resumes from the receiver's last byte) before parking
+         *  a transfer as INTERRUPTED for a manual resume. */
+        private const val MAX_SEND_RETRIES = 2
         private fun now() = System.currentTimeMillis()
         fun randomPin() = "%06d".format(Random.nextInt(0, 1_000_000))
         fun pretty(pin: String) = if (pin.length == 6) "${pin.substring(0, 3)} ${pin.substring(3)}" else pin

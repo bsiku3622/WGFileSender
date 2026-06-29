@@ -77,7 +77,7 @@ data class Settings(
 enum class TransferDirection { INCOMING, OUTGOING }
 
 @Serializable
-enum class TransferState { ACTIVE, COMPLETED, FAILED }
+enum class TransferState { QUEUED, ACTIVE, COMPLETED, FAILED, INTERRUPTED }
 
 @Serializable
 data class Transfer(

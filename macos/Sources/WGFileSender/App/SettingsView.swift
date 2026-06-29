@@ -63,6 +63,13 @@ struct SettingsView: View {
                 .labelsHidden()
             }
 
+            Section(L(.updates, lang)) {
+                LabeledContent(L(.currentVersion, lang)) {
+                    Text("v\(state.appVersion)").foregroundStyle(.secondary)
+                }
+                updateContent
+            }
+
             Section {
                 Text(L(.settingsFooter, lang))
                     .font(.caption).foregroundStyle(.secondary)
@@ -71,6 +78,60 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .onAppear { portText = String(state.settings.port) }
         .sheet(isPresented: $editingName) { EditNameSheet() }
+    }
+
+    /// State-driven UI for the Updates section.
+    @ViewBuilder private var updateContent: some View {
+        switch state.updateState {
+        case .idle:
+            Button(L(.checkForUpdates, lang)) { state.checkForUpdates(manual: true) }
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(L(.checkingForUpdates, lang)).foregroundStyle(.secondary)
+            }
+        case .upToDate:
+            HStack {
+                Text(L(.upToDate, lang)).foregroundStyle(.secondary)
+                Spacer()
+                Button(L(.checkForUpdates, lang)) { state.checkForUpdates(manual: true) }
+            }
+        case .available(let info):
+            VStack(alignment: .leading, spacing: 8) {
+                Text(String(format: L(.updateAvailable, lang), info.version)).font(.headline)
+                if !info.releaseNotes.isEmpty {
+                    Text(L(.whatsNew, lang)).font(.caption).foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(info.releaseNotes).font(.caption)
+                            .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 120)
+                }
+                HStack {
+                    Button(L(.downloadUpdate, lang)) { state.downloadUpdate() }
+                        .buttonStyle(.borderedProminent)
+                    Button(L(.later, lang)) { state.dismissUpdate() }
+                }
+            }
+        case .downloading(let p):
+            VStack(alignment: .leading, spacing: 6) {
+                ProgressView(value: p)
+                Text("\(L(.downloadingUpdate, lang)) \(Int(p * 100))%")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        case .downloaded:
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L(.updateDownloadedHint, lang)).font(.caption).foregroundStyle(.secondary)
+                Button(L(.openToInstall, lang)) { state.revealUpdate() }
+                    .buttonStyle(.borderedProminent)
+            }
+        case .failed(let msg):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(String(format: L(.updateCheckFailed, lang), msg))
+                    .font(.caption).foregroundStyle(.red)
+                Button(L(.retry, lang)) { state.checkForUpdates(manual: true) }
+            }
+        }
     }
 
     private func applyPort() {

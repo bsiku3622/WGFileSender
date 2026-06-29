@@ -29,7 +29,11 @@ enum class S {
     pairingWith, close, from, to, failed,
     confirmPinOnOther, pairingFailed, checksumMismatch, noDownloadFolder,
     channelName, channelDesc, notifReady,
-    open, delete, renameFile, openFolder, resend, canceled
+    open, delete, renameFile, openFolder, resend, canceled,
+    resume, interrupted, connectionLost, retrying, remaining, queued,
+    updates, currentVersion, checkForUpdates, checkingForUpdates, upToDate,
+    updateAvailable, whatsNew, downloadUpdate, downloadingUpdate, installUpdate,
+    updateDownloadedHint, updateCheckFailed, retry, later
 }
 
 val LocalLang = staticCompositionLocalOf { Lang.EN }
@@ -111,5 +115,25 @@ fun str(key: S, lang: Lang): String {
         S.openFolder -> if (ko) "폴더 열기" else "Open Folder"
         S.resend -> if (ko) "재전송" else "Resend"
         S.canceled -> if (ko) "취소됨" else "Canceled"
+        S.resume -> if (ko) "이어받기" else "Resume"
+        S.interrupted -> if (ko) "중단됨" else "Interrupted"
+        S.connectionLost -> if (ko) "연결 끊김" else "Connection lost"
+        S.retrying -> if (ko) "다시 연결 중…" else "Reconnecting…"
+        S.remaining -> if (ko) "남음" else "left"
+        S.queued -> if (ko) "대기 중" else "Queued"
+        S.updates -> if (ko) "업데이트" else "Updates"
+        S.currentVersion -> if (ko) "현재 버전" else "Current version"
+        S.checkForUpdates -> if (ko) "업데이트 확인" else "Check for Updates"
+        S.checkingForUpdates -> if (ko) "확인 중…" else "Checking…"
+        S.upToDate -> if (ko) "최신 버전입니다" else "You're up to date"
+        S.updateAvailable -> if (ko) "새 버전 %s 사용 가능" else "Version %s available"
+        S.whatsNew -> if (ko) "새로운 점" else "What's new"
+        S.downloadUpdate -> if (ko) "다운로드" else "Download"
+        S.downloadingUpdate -> if (ko) "다운로드 중…" else "Downloading…"
+        S.installUpdate -> if (ko) "설치" else "Install"
+        S.updateDownloadedHint -> if (ko) "다운로드 완료 — 설치를 진행하세요." else "Downloaded — tap install to continue."
+        S.updateCheckFailed -> if (ko) "확인 실패: %s" else "Check failed: %s"
+        S.retry -> if (ko) "다시 시도" else "Retry"
+        S.later -> if (ko) "나중에" else "Later"
     }
 }

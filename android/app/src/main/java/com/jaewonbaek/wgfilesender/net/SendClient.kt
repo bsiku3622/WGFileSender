@@ -8,6 +8,7 @@ import com.jaewonbaek.wgfilesender.model.PairConfirmBody
 import com.jaewonbaek.wgfilesender.model.PairRequestBody
 import com.jaewonbaek.wgfilesender.model.PeerDevice
 import com.jaewonbaek.wgfilesender.model.PingResponse
+import com.jaewonbaek.wgfilesender.model.SendStatusResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
@@ -25,6 +26,7 @@ import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeFully
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.InputStream
 import java.security.MessageDigest
 
 /** Outbound side: probes, pairing handshake, and streaming uploads. */
@@ -68,20 +70,34 @@ class SendClient(private val context: Context, private val config: SharedConfig)
         peer: PeerDevice,
         uri: Uri,
         fileName: String,
-        size: Long,
         transferId: String,
+        tryResume: Boolean = false,
+        onSize: (Long) -> Unit = {},
         onProgress: (Long) -> Unit
     ) {
-        val hash = sha256(uri)
+        // Trust the stream, not the SAF/MediaStore metadata: hash and measure in one pass so
+        // Content-Length always matches the bytes the hash covers (a wrong reported size was
+        // truncating receives and failing every checksum).
+        val (hash, actualSize) = hashAndSize(uri)
+        onSize(actualSize)
         val id = config.identity
         val resolver = context.contentResolver
 
+        // On a resume attempt, ask the receiver how many bytes it already holds and send
+        // only the remainder. First-time sends skip the round-trip and stream the whole file.
+        var offset = 0L
+        if (tryResume) {
+            val have = runCatching { sendStatus(peer, transferId) }.getOrDefault(0L)
+            if (have in 1 until actualSize) offset = have
+        }
+
         val content = object : OutgoingContent.WriteChannelContent() {
-            override val contentLength: Long = size
+            override val contentLength: Long = actualSize - offset
             override suspend fun writeTo(channel: ByteWriteChannel) {
                 val buf = ByteArray(1 shl 16)
-                var sent = 0L
+                var sent = offset
                 resolver.openInputStream(uri)?.use { input ->
+                    if (offset > 0) skipFully(input, offset)
                     while (true) {
                         val n = input.read(buf)
                         if (n < 0) break
@@ -98,24 +114,50 @@ class SendClient(private val context: Context, private val config: SharedConfig)
             header("X-WGFS-Device-Id", id.deviceId)
             header("X-WGFS-Device-Name", id.deviceName)
             header("X-WGFS-File-Name", Uri.encode(fileName))
-            header("X-WGFS-File-Size", size.toString())
+            header("X-WGFS-File-Size", actualSize.toString())
             header("X-WGFS-Sha256", hash)
             header("X-WGFS-Transfer-Id", transferId)
+            if (offset > 0) header("Content-Range", "bytes $offset-${actualSize - 1}/$actualSize")
             setBody(content)
         }
         check(resp.status.value == 200) { "send ${resp.status.value}" }
     }
 
-    private fun sha256(uri: Uri): String {
+    /** Bytes the receiver already has for this transfer (0 if none / unreachable). */
+    private suspend fun sendStatus(peer: PeerDevice, transferId: String): Long {
+        val resp = client.get("http://${peer.peerAddress}/send/status?transferId=$transferId") {
+            header(HttpHeaders.Authorization, "Bearer ${peer.tokenOut}")
+            timeout { requestTimeoutMillis = 15_000 }
+        }
+        if (resp.status.value != 200) return 0L
+        return json.decodeFromString<SendStatusResponse>(resp.bodyAsText()).received
+    }
+
+    /** Discards `n` bytes from the stream (ContentResolver streams don't reliably skip()). */
+    private fun skipFully(input: InputStream, n: Long) {
+        var remaining = n
+        val buf = ByteArray(1 shl 16)
+        while (remaining > 0) {
+            val toRead = minOf(remaining, buf.size.toLong()).toInt()
+            val r = input.read(buf, 0, toRead)
+            if (r < 0) break
+            remaining -= r
+        }
+    }
+
+    /** Hashes and measures the stream in one pass so both describe the exact same bytes. */
+    private fun hashAndSize(uri: Uri): Pair<String, Long> {
         val md = MessageDigest.getInstance("SHA-256")
+        var total = 0L
         context.contentResolver.openInputStream(uri)?.use { input ->
             val buf = ByteArray(1 shl 16)
             while (true) {
                 val n = input.read(buf)
                 if (n < 0) break
                 md.update(buf, 0, n)
+                total += n
             }
         }
-        return md.digest().joinToString("") { "%02x".format(it) }
+        return md.digest().joinToString("") { "%02x".format(it) } to total
     }
 }

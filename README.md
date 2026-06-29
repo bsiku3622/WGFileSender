@@ -32,6 +32,7 @@ documented in [`PROTOCOL.md`](./PROTOCOL.md) — both clients implement the same
 - **Mutual PIN pairing** — confirm it's your device on both ends
 - **Per-device folders** — files arrive under the sender's name (renamable locally)
 - **Integrity checked** — every transfer is SHA-256 verified, collisions auto-renamed
+- **Resumable** — a dropped transfer auto-retries and continues from the last received byte; cancel/resume by hand too
 - **Background receive** — macOS menu-bar app · Android foreground service
 - **Native UI** — SwiftUI on macOS, Jetpack Compose (shadcn-style) on Android
 

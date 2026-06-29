@@ -35,6 +35,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileOutputStream
 import java.security.MessageDigest
 
 /** Owns the HTTP listener and routes requests per PROTOCOL.md. */
@@ -120,33 +121,61 @@ class HttpListener(
         val senderName = call.request.headers["X-WGFS-Device-Name"] ?: peer.peerName
         val folderName = peer.localName?.takeIf { it.isNotBlank() } ?: senderName
 
+        val part = partFile(transferId)
+        // Resume: honor Content-Range only when its start matches the bytes already on disk;
+        // otherwise begin a fresh .part.
+        val onDisk = if (part.exists()) part.length() else 0L
+        val start = rangeStart(call.request.headers["Content-Range"])
+            ?.takeIf { it > 0 && it == onDisk } ?: 0L
+        if (start == 0L && part.exists()) part.delete()
+
+        val md = MessageDigest.getInstance("SHA-256")
+        if (start > 0L) {
+            // Prime the hasher with the bytes we're keeping before appending the rest.
+            part.inputStream().use { existing ->
+                val buf = ByteArray(1 shl 16)
+                while (true) { val n = existing.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+            }
+        }
+
         events.onTransferStart(
-            Transfer(transferId, TransferDirection.INCOMING, peer.displayName, fileName, total)
+            Transfer(transferId, TransferDirection.INCOMING, peer.displayName, fileName, total,
+                transferredBytes = start)
         )
 
-        val part = partFile(transferId)
-        val md = MessageDigest.getInstance("SHA-256")
-        var received = 0L
-        // Blocking stream copy off the event loop; hash as we write.
-        withContext(Dispatchers.IO) {
-            call.receiveStream().use { input ->
-                part.outputStream().use { out ->
-                    val buf = ByteArray(1 shl 16)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        md.update(buf, 0, n)
-                        received += n
-                        events.onTransferProgress(transferId, received)
+        var received = start
+        var complete = false
+        // Blocking stream copy off the event loop; hash as we write. A mid-body disconnect
+        // throws here — we keep the .part so the sender can resume.
+        try {
+            withContext(Dispatchers.IO) {
+                call.receiveStream().use { input ->
+                    FileOutputStream(part, /* append = */ start > 0L).use { out ->
+                        val buf = ByteArray(1 shl 16)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            md.update(buf, 0, n)
+                            received += n
+                            events.onTransferProgress(transferId, received)
+                        }
                     }
                 }
             }
+            complete = received >= total
+        } catch (_: Exception) {
+            complete = false
+        }
+
+        if (!complete) {
+            events.onTransferFinish(transferId, TransferState.INTERRUPTED, str(S.connectionLost, config.language))
+            return call.respond(HttpStatusCode.BadRequest)
         }
 
         val digest = md.digest().joinToString("") { "%02x".format(it) }
         if (digest != expected) {
-            part.delete()
+            part.delete()   // a fully-received file that hashes wrong is corrupt
             events.onTransferFinish(transferId, TransferState.FAILED, str(S.checksumMismatch, config.language))
             return call.respond(HttpStatusCode.Conflict)
         }
@@ -158,6 +187,12 @@ class HttpListener(
         }
         events.onTransferFinish(transferId, TransferState.COMPLETED, null, savedUri)
         call.respond(HttpStatusCode.OK)
+    }
+
+    /** Start byte of a `bytes <start>-<end>/<total>` Content-Range header, or null. */
+    private fun rangeStart(header: String?): Long? {
+        if (header == null) return null
+        return header.lowercase().removePrefix("bytes ").substringBefore('-').trim().toLongOrNull()
     }
 
     // MARK: storage (SAF)

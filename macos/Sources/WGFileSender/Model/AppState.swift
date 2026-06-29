@@ -8,16 +8,21 @@ final class AppState: ObservableObject {
     @Published var peers: [PeerDevice]
     @Published var settings: Store.Settings
     @Published var transfers: [Transfer] = []
+    /// Smoothed transfer rate (bytes/sec) per active transfer id, for the speed/ETA readout.
+    @Published var transferRates: [String: Double] = [:]
+    private var rateSamples: [String: (bytes: Int64, time: Date)] = [:]
     @Published var listenerError: String?
     @Published var pendingPairing: PendingPairing?     // incoming request awaiting accept
     @Published var outgoingPairing: OutgoingPairing?   // our initiated pairing, in progress
     @Published var selectedTab = 0   // 0 Devices · 1 Transfers · 2 Settings
+    @Published var updateState: UpdateState = .idle
 
     private let store = Store()
     private let config: SharedConfig
     private let sendClient: SendClient
     private var listener: ListenerService!
     private var pairContinuation: CheckedContinuation<String?, Never>?
+    private let updateService = UpdateService()
 
     /// Shared instance so the AppKit status-item delegate and SwiftUI scenes
     /// observe the same state.
@@ -49,7 +54,65 @@ final class AppState: ObservableObject {
         try? FileManager.default.createDirectory(atPath: loadedSettings.downloadRoot,
                                                  withIntermediateDirectories: true)
         startListener()
+        checkForUpdates(manual: false)   // quiet check once per launch
     }
+
+    // MARK: updates
+
+    var appVersion: String { updateService.currentVersion }
+
+    /// Checks GitHub for a newer release. `manual` surfaces "up to date" / errors in the UI;
+    /// an automatic launch check stays quiet unless an update is actually found.
+    func checkForUpdates(manual: Bool) {
+        switch updateState {
+        case .checking, .downloading: return   // already busy
+        default: break
+        }
+        updateState = .checking
+        Task {
+            do {
+                if let info = try await updateService.checkForUpdate() {
+                    updateState = .available(info)
+                } else {
+                    updateState = manual ? .upToDate : .idle
+                }
+            } catch {
+                updateState = manual ? .failed(error.localizedDescription) : .idle
+            }
+        }
+    }
+
+    func downloadUpdate() {
+        guard case .available(let info) = updateState else { return }
+        guard info.assetUrl != nil else {
+            // No platform asset attached — fall back to the release page.
+            if let url = URL(string: info.pageUrl) { NSWorkspace.shared.open(url) }
+            return
+        }
+        updateState = .downloading(0)
+        Task {
+            do {
+                let fileURL = try await updateService.download(info) { p in
+                    Task { @MainActor in
+                        if case .downloading = self.updateState { self.updateState = .downloading(p) }
+                    }
+                }
+                updateState = .downloaded(fileURL)
+            } catch {
+                updateState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Reveals the downloaded file in Finder and opens it (mounts a .dmg / unzips a .zip)
+    /// so the user can replace the app — we don't swap it out from under them.
+    func revealUpdate() {
+        guard case .downloaded(let url) = updateState else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        NSWorkspace.shared.open(url)
+    }
+
+    func dismissUpdate() { updateState = .idle }
 
     // MARK: listener
 
@@ -150,57 +213,93 @@ final class AppState: ObservableObject {
             let id = UUID().uuidString
             upsertTransfer(Transfer(id: id, direction: .outgoing, peerName: peer.displayName,
                                     fileName: url.lastPathComponent, totalBytes: fileSize(url),
-                                    transferredBytes: 0, state: .active, startedAt: Date(),
+                                    transferredBytes: 0, state: .queued, startedAt: Date(),
                                     localPath: url.path, peerId: peer.peerId))
             startSend(id: id, url: url, peer: peer)
         }
     }
 
-    private func startSend(id: String, url: URL, peer: PeerDevice) {
+    /// Number of auto-retry attempts (each picks up from the receiver's last byte) before
+    /// a transfer is parked as `.interrupted` for a manual resume.
+    private let maxSendRetries = 2
+
+    private func startSend(id: String, url: URL, peer: PeerDevice, resumeFirst: Bool = false) {
         let task = Task { [weak self] in
             guard let self else { return }
             await self.sendLimiter.acquire()
             defer { Task { await self.sendLimiter.release() } }
-            if Task.isCancelled { await self.markCanceled(id); return }
-            await self.performSend(id: id, url: url, peer: peer)
+            if Task.isCancelled { self.markInterrupted(id, error: L(.canceled, .current)); return }
+            self.markActive(id)   // queued → active once a slot frees up
+            await self.performSend(id: id, url: url, peer: peer, resumeFirst: resumeFirst)
         }
         activeSendTasks[id] = task
     }
 
-    private func performSend(id: String, url: URL, peer: PeerDevice) async {
-        do {
-            try await sendClient.sendFile(to: peer, fileURL: url, transferId: id) { sent, _ in
-                Task { @MainActor in self.updateProgress(id: id, bytes: sent) }
+    private func performSend(id: String, url: URL, peer: PeerDevice, resumeFirst: Bool) async {
+        var attempt = 0
+        var tryResume = resumeFirst
+        while true {
+            do {
+                try await sendClient.sendFile(to: peer, fileURL: url, transferId: id, tryResume: tryResume) { sent, _ in
+                    Task { @MainActor in self.updateProgress(id: id, bytes: sent) }
+                }
+                finishTransfer(id: id, state: .completed, error: nil)
+                activeSendTasks[id] = nil
+                return
+            } catch is CancellationError {
+                markInterrupted(id, error: L(.canceled, .current)); activeSendTasks[id] = nil; return
+            } catch {
+                if (error as? URLError)?.code == .cancelled {
+                    markInterrupted(id, error: L(.canceled, .current)); activeSendTasks[id] = nil; return
+                }
+                attempt += 1
+                guard attempt <= maxSendRetries else {
+                    markInterrupted(id, error: error.localizedDescription); activeSendTasks[id] = nil; return
+                }
+                // Auto-resume: pause briefly, then continue from the receiver's last byte.
+                setRetrying(id)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if Task.isCancelled {
+                    markInterrupted(id, error: L(.canceled, .current)); activeSendTasks[id] = nil; return
+                }
+                tryResume = true
             }
-            finishTransfer(id: id, state: .completed, error: nil)
-        } catch is CancellationError {
-            markCanceled(id)
-        } catch {
-            if (error as? URLError)?.code == .cancelled { markCanceled(id) }
-            else { finishTransfer(id: id, state: .failed, error: error.localizedDescription) }
         }
-        activeSendTasks[id] = nil
     }
 
-    private func markCanceled(_ id: String) {
-        finishTransfer(id: id, state: .failed, error: L(.canceled, .current))
+    private func markInterrupted(_ id: String, error: String) {
+        finishTransfer(id: id, state: .interrupted, error: error)
     }
 
-    /// Cancels an in-flight outgoing transfer.
+    /// queued → active once a concurrency slot opens.
+    private func markActive(_ id: String) {
+        guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
+        if transfers[i].state == .queued { transfers[i].state = .active }
+    }
+
+    /// Keeps the row active but flags that we're reconnecting between auto-retry attempts.
+    private func setRetrying(_ id: String) {
+        guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
+        transfers[i].error = L(.retrying, .current)
+        clearRate(id)   // rate restarts when bytes flow again
+    }
+
+    /// Cancels an in-flight outgoing transfer. The partial bytes are kept on the receiver
+    /// so it can be resumed later.
     func cancelTransfer(_ transfer: Transfer) {
         activeSendTasks[transfer.id]?.cancel()
     }
 
-    /// Re-sends a failed/canceled outgoing transfer using its stored source path.
-    func resendTransfer(_ transfer: Transfer) {
+    /// Resumes an interrupted/failed outgoing transfer from where the receiver left off
+    /// (a fresh receiver with no partial bytes simply re-sends the whole file).
+    func resumeTransfer(_ transfer: Transfer) {
         guard transfer.direction == .outgoing, let path = transfer.localPath,
               let peer = peers.first(where: { $0.peerId == transfer.peerId }) else { return }
         if let i = transfers.firstIndex(where: { $0.id == transfer.id }) {
             transfers[i].state = .active
-            transfers[i].error = nil
-            transfers[i].transferredBytes = 0
+            transfers[i].error = nil   // keep transferredBytes: we continue, not restart
         }
-        startSend(id: transfer.id, url: URL(fileURLWithPath: path), peer: peer)
+        startSend(id: transfer.id, url: URL(fileURLWithPath: path), peer: peer, resumeFirst: true)
     }
 
     // MARK: peers
@@ -263,6 +362,24 @@ final class AppState: ObservableObject {
     private func updateProgress(id: String, bytes: Int64) {
         guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
         transfers[i].transferredBytes = bytes
+        // Instantaneous rate, smoothed with an EMA and sampled at most ~3x/sec.
+        let now = Date()
+        if let prev = rateSamples[id] {
+            let dt = now.timeIntervalSince(prev.time)
+            if dt >= 0.3 {
+                let inst = Double(bytes - prev.bytes) / dt
+                let smoothed = (transferRates[id].map { $0 * 0.6 + inst * 0.4 }) ?? inst
+                transferRates[id] = max(0, smoothed)
+                rateSamples[id] = (bytes, now)
+            }
+        } else {
+            rateSamples[id] = (bytes, now)
+        }
+    }
+
+    private func clearRate(_ id: String) {
+        transferRates[id] = nil
+        rateSamples[id] = nil
     }
 
     private func finishTransfer(id: String, state: TransferState, error: String?, savedPath: String? = nil) {
@@ -271,17 +388,19 @@ final class AppState: ObservableObject {
         transfers[i].error = error
         if let savedPath { transfers[i].localPath = savedPath }
         if state == .completed { transfers[i].transferredBytes = transfers[i].totalBytes }
+        clearRate(id)
         persistTransfers()
     }
 
     func clearFinishedTransfers() {
-        transfers.removeAll { $0.state != .active }
+        // Keep active and interrupted (resumable) rows; clear only completed/failed.
+        transfers.removeAll { $0.state == .completed || $0.state == .failed }
         persistTransfers()
     }
 
     /// Persist finished transfers only; in-flight ones are gone after a restart anyway.
     private func persistTransfers() {
-        store.save(transfers: transfers.filter { $0.state != .active })
+        store.save(transfers: transfers.filter { $0.state != .active && $0.state != .queued })
     }
 
     func openDownloadFolder() {

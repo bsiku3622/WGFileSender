@@ -40,6 +40,11 @@ enum LKey {
     case confirmPinOnOther, pairingFailed, cantBindPort, checksumMismatch
     case open, revealInFinder, delete, renameFile, openFolder
     case resend, canceled
+    case resume, interrupted, connectionLost, retrying, waitingToResume
+    case remaining, paused, queued
+    case updates, currentVersion, checkForUpdates, checkingForUpdates, upToDate
+    case updateAvailable, whatsNew, downloadUpdate, downloadingUpdate, openToInstall
+    case updateDownloadedHint, updateCheckFailed, retry, later
 }
 
 /// Localized string. Views pass an @AppStorage-tracked `lang` so they re-render on change.
@@ -125,5 +130,29 @@ func L(_ key: LKey, _ lang: Lang = .current) -> String {
     case .openFolder:         return ko ? "폴더 열기" : "Open Folder"
     case .resend:             return ko ? "재전송" : "Resend"
     case .canceled:           return ko ? "취소됨" : "Canceled"
+    case .resume:             return ko ? "이어받기" : "Resume"
+    case .interrupted:        return ko ? "중단됨" : "Interrupted"
+    case .connectionLost:     return ko ? "연결 끊김" : "Connection lost"
+    case .retrying:           return ko ? "다시 연결 중…" : "Reconnecting…"
+    case .waitingToResume:    return ko ? "이어받기 대기 중" : "Waiting to resume"
+    case .remaining:          return ko ? "남음" : "left"
+    case .paused:             return ko ? "일시정지됨" : "Paused"
+    case .queued:             return ko ? "대기 중" : "Queued"
+    case .updates:            return ko ? "업데이트" : "Updates"
+    case .currentVersion:     return ko ? "현재 버전" : "Current version"
+    case .checkForUpdates:    return ko ? "업데이트 확인" : "Check for Updates"
+    case .checkingForUpdates: return ko ? "확인 중…" : "Checking…"
+    case .upToDate:           return ko ? "최신 버전입니다" : "You're up to date"
+    case .updateAvailable:    return ko ? "새 버전 %@ 사용 가능" : "Version %@ available"
+    case .whatsNew:           return ko ? "새로운 점" : "What's new"
+    case .downloadUpdate:     return ko ? "다운로드" : "Download"
+    case .downloadingUpdate:  return ko ? "다운로드 중…" : "Downloading…"
+    case .openToInstall:      return ko ? "열어서 설치" : "Open to Install"
+    case .updateDownloadedHint:
+        return ko ? "다운로드한 파일을 열어 앱을 새 버전으로 교체하세요."
+                  : "Open the downloaded file to replace the app with the new version."
+    case .updateCheckFailed:  return ko ? "확인 실패: %@" : "Check failed: %@"
+    case .retry:              return ko ? "다시 시도" : "Retry"
+    case .later:              return ko ? "나중에" : "Later"
     }
 }

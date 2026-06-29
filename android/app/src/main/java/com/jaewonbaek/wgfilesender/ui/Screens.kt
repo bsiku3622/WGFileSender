@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.Warning
@@ -69,12 +70,14 @@ import com.jaewonbaek.wgfilesender.model.PeerDevice
 import com.jaewonbaek.wgfilesender.model.Transfer
 import com.jaewonbaek.wgfilesender.model.TransferDirection
 import com.jaewonbaek.wgfilesender.model.TransferState
+import com.jaewonbaek.wgfilesender.net.UpdateState
 import com.jaewonbaek.wgfilesender.ui.components.BtnVariant
 import com.jaewonbaek.wgfilesender.ui.components.ShadButton
 import com.jaewonbaek.wgfilesender.ui.components.ShadCard
 import com.jaewonbaek.wgfilesender.ui.components.ShadTabs
 import com.jaewonbaek.wgfilesender.ui.components.ShadTextField
 import com.jaewonbaek.wgfilesender.ui.theme.Shad
+import kotlin.math.roundToInt
 
 @Composable
 fun AppScreen(controller: AppController) {
@@ -207,6 +210,7 @@ private fun PeerCard(peer: PeerDevice, onSend: () -> Unit, onRename: () -> Unit,
 @Composable
 private fun TransfersScreen(controller: AppController) {
     val transfers by controller.transfers.collectAsState()
+    val rates by controller.transferRates.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -215,7 +219,7 @@ private fun TransfersScreen(controller: AppController) {
                 modifier = Modifier.weight(1f))
             ShadButton(t(S.openFolder), { controller.openDownloadFolder() },
                 icon = Icons.Rounded.Folder, variant = BtnVariant.Ghost)
-            if (transfers.any { it.state != TransferState.ACTIVE }) {
+            if (transfers.any { it.state == TransferState.COMPLETED || it.state == TransferState.FAILED }) {
                 ShadButton(t(S.clear), { controller.clearFinished() }, variant = BtnVariant.Ghost)
             }
         }
@@ -223,7 +227,7 @@ private fun TransfersScreen(controller: AppController) {
             EmptyState(Icons.Rounded.Inbox, t(S.noTransfers), t(S.noTransfersHint))
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(transfers, key = { it.id }) { TransferCard(controller, it) }
+                items(transfers, key = { it.id }) { TransferCard(controller, it, rates[it.id]) }
             }
         }
     }
@@ -231,7 +235,7 @@ private fun TransfersScreen(controller: AppController) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TransferCard(controller: AppController, transfer: Transfer) {
+private fun TransferCard(controller: AppController, transfer: Transfer, rate: Double?) {
     val lang = LocalLang.current
     val incoming = transfer.direction == TransferDirection.INCOMING
     var menu by remember { mutableStateOf(false) }
@@ -245,55 +249,74 @@ private fun TransferCard(controller: AppController, transfer: Transfer) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val tint = when {
                 transfer.state == TransferState.FAILED -> Shad.destructive
+                transfer.state == TransferState.INTERRUPTED -> Shad.sent   // amber-ish, "paused"
+                transfer.state == TransferState.QUEUED -> Shad.mutedForeground
                 incoming -> Shad.received   // green
                 else -> Shad.sent           // orange
             }
             Icon(
-                if (incoming) Icons.Rounded.ArrowDownward else Icons.Rounded.ArrowUpward,
+                when {
+                    transfer.state == TransferState.INTERRUPTED -> Icons.Rounded.Warning
+                    incoming -> Icons.Rounded.ArrowDownward
+                    else -> Icons.Rounded.ArrowUpward
+                },
                 null, tint = tint, modifier = Modifier.size(22.dp)
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(transfer.fileName, fontWeight = FontWeight.Medium, fontSize = 14.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(subtitle(transfer, lang), color = Shad.mutedForeground, fontSize = 12.sp,
+                Text(subtitle(transfer, lang, rate), color = Shad.mutedForeground, fontSize = 12.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (transfer.state == TransferState.ACTIVE) {
+                if (transfer.state == TransferState.ACTIVE || transfer.state == TransferState.INTERRUPTED) {
                     Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(
                         progress = { transfer.progress },
-                        color = Shad.accent,
+                        color = if (transfer.state == TransferState.INTERRUPTED) Shad.sent else Shad.accent,
                         trackColor = Shad.muted,
                         modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape)
                     )
                 }
             }
             Spacer(Modifier.width(10.dp))
-            if (transfer.state == TransferState.ACTIVE) {
+            if (transfer.state == TransferState.ACTIVE || transfer.state == TransferState.QUEUED) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${(transfer.progress * 100).toInt()}%",
-                        color = Shad.mutedForeground, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                    Spacer(Modifier.width(4.dp))
+                    if (transfer.state == TransferState.ACTIVE) {
+                        Text("${(transfer.progress * 100).toInt()}%",
+                            color = Shad.mutedForeground, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.width(4.dp))
+                    }
                     Icon(Icons.Rounded.Close, null, tint = Shad.mutedForeground,
                         modifier = Modifier.size(20.dp).clip(CircleShape)
                             .clickable { controller.cancelTransfer(transfer) })
                 }
             } else {
-                Box {
-                    Icon(Icons.Rounded.MoreVert, null, tint = Shad.mutedForeground,
-                        modifier = Modifier.size(24.dp).clip(CircleShape).clickable { menu = true })
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text(t(S.open)) },
-                            onClick = { menu = false; controller.openTransfer(transfer) })
-                        if (!incoming && transfer.state == TransferState.FAILED) {
-                            DropdownMenuItem(text = { Text(t(S.resend)) },
-                                onClick = { menu = false; controller.resendTransfer(transfer) })
-                        }
-                        if (incoming) {
-                            DropdownMenuItem(text = { Text(t(S.renameFile)) },
-                                onClick = { menu = false; newName = transfer.fileName; renaming = true })
-                            DropdownMenuItem(text = { Text(t(S.delete)) },
-                                onClick = { menu = false; controller.deleteTransfer(transfer) })
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!incoming &&
+                        (transfer.state == TransferState.INTERRUPTED || transfer.state == TransferState.FAILED) &&
+                        transfer.localPath != null) {
+                        Icon(Icons.Rounded.Refresh, null, tint = Shad.sent,
+                            modifier = Modifier.size(22.dp).clip(CircleShape)
+                                .clickable { controller.resumeTransfer(transfer) })
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Box {
+                        Icon(Icons.Rounded.MoreVert, null, tint = Shad.mutedForeground,
+                            modifier = Modifier.size(24.dp).clip(CircleShape).clickable { menu = true })
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(text = { Text(t(S.open)) },
+                                onClick = { menu = false; controller.openTransfer(transfer) })
+                            if (!incoming &&
+                                (transfer.state == TransferState.FAILED || transfer.state == TransferState.INTERRUPTED)) {
+                                DropdownMenuItem(text = { Text(t(S.resume)) },
+                                    onClick = { menu = false; controller.resumeTransfer(transfer) })
+                            }
+                            if (incoming) {
+                                DropdownMenuItem(text = { Text(t(S.renameFile)) },
+                                    onClick = { menu = false; newName = transfer.fileName; renaming = true })
+                                DropdownMenuItem(text = { Text(t(S.delete)) },
+                                    onClick = { menu = false; controller.deleteTransfer(transfer) })
+                            }
                         }
                     }
                 }
@@ -319,11 +342,24 @@ private fun TransferCard(controller: AppController, transfer: Transfer) {
     }
 }
 
-private fun subtitle(transfer: Transfer, lang: Lang): String {
+private fun subtitle(transfer: Transfer, lang: Lang, rate: Double? = null): String {
     val dir = if (transfer.direction == TransferDirection.INCOMING) str(S.from, lang) else str(S.to, lang)
     return when (transfer.state) {
-        TransferState.ACTIVE -> "$dir ${transfer.peerName} · ${transfer.transferredBytes.humanBytes()} / ${transfer.totalBytes.humanBytes()}"
+        TransferState.QUEUED -> "$dir ${transfer.peerName} · ${str(S.queued, lang)}"
+        TransferState.ACTIVE -> {
+            val e = transfer.error
+            if (!e.isNullOrEmpty()) return "$dir ${transfer.peerName} · $e"   // reconnecting between retries
+            var s = "$dir ${transfer.peerName} · ${transfer.transferredBytes.humanBytes()} / ${transfer.totalBytes.humanBytes()}"
+            if (rate != null && rate > 1) {
+                s += " · ${rate.toLong().humanBytes()}/s"
+                val eta = etaString((transfer.totalBytes - transfer.transferredBytes) / rate)
+                if (eta.isNotEmpty()) s += " · $eta ${str(S.remaining, lang)}"
+            }
+            s
+        }
         TransferState.COMPLETED -> "$dir ${transfer.peerName} · ${transfer.totalBytes.humanBytes()}"
+        TransferState.INTERRUPTED ->
+            "$dir ${transfer.peerName} · ${str(S.interrupted, lang)} · ${(transfer.progress * 100).toInt()}%"
         TransferState.FAILED -> "$dir ${transfer.peerName} · ${transfer.error ?: str(S.failed, lang)}"
     }
 }
@@ -395,10 +431,75 @@ private fun SettingsScreen(controller: AppController) {
                 )
             }
         }
+        item { UpdateCard(controller) }
         item {
             Text(t(S.settingsFooter),
                 color = Shad.mutedForeground, fontSize = 12.sp,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp))
+        }
+    }
+}
+
+@Composable
+private fun UpdateCard(controller: AppController) {
+    val state by controller.updateState.collectAsState()
+    ShadCard {
+        Text(t(S.updates), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(t(S.currentVersion), color = Shad.mutedForeground, fontSize = 12.sp,
+                modifier = Modifier.weight(1f))
+            Text("v${controller.appVersion}", fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(12.dp))
+        when (val s = state) {
+            is UpdateState.Idle ->
+                ShadButton(t(S.checkForUpdates), { controller.checkForUpdates(true) }, variant = BtnVariant.Outline)
+            is UpdateState.Checking ->
+                Text(t(S.checkingForUpdates), color = Shad.mutedForeground, fontSize = 13.sp)
+            is UpdateState.UpToDate ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(t(S.upToDate), color = Shad.mutedForeground, fontSize = 13.sp,
+                        modifier = Modifier.weight(1f))
+                    ShadButton(t(S.checkForUpdates), { controller.checkForUpdates(true) }, variant = BtnVariant.Outline)
+                }
+            is UpdateState.Available ->
+                Column {
+                    Text(String.format(t(S.updateAvailable), s.info.version),
+                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    if (s.info.releaseNotes.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(t(S.whatsNew), color = Shad.mutedForeground, fontSize = 12.sp)
+                        Text(s.info.releaseNotes, fontSize = 12.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ShadButton(t(S.downloadUpdate), { controller.downloadUpdate() })
+                        ShadButton(t(S.later), { controller.dismissUpdate() }, variant = BtnVariant.Ghost)
+                    }
+                }
+            is UpdateState.Downloading ->
+                Column {
+                    LinearProgressIndicator(progress = { s.progress }, color = Shad.accent,
+                        trackColor = Shad.muted,
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape))
+                    Spacer(Modifier.height(6.dp))
+                    Text("${t(S.downloadingUpdate)} ${(s.progress * 100).toInt()}%",
+                        color = Shad.mutedForeground, fontSize = 12.sp)
+                }
+            is UpdateState.Downloaded ->
+                Column {
+                    Text(t(S.updateDownloadedHint), color = Shad.mutedForeground, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    ShadButton(t(S.installUpdate), { controller.installUpdate() })
+                }
+            is UpdateState.Failed ->
+                Column {
+                    Text(String.format(t(S.updateCheckFailed), s.message),
+                        color = Shad.destructive, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    ShadButton(t(S.retry), { controller.checkForUpdates(true) }, variant = BtnVariant.Outline)
+                }
         }
     }
 }
@@ -451,4 +552,15 @@ fun Long.humanBytes(): String {
     var v = this.toDouble(); var i = -1
     while (v >= 1024 && i < units.size - 1) { v /= 1024; i++ }
     return "%.1f %s".format(v, units[i])
+}
+
+/** Compact remaining-time label: "15s", "2m 10s", "1h 4m". Empty when not meaningful. */
+fun etaString(seconds: Double): String {
+    if (!seconds.isFinite() || seconds <= 0 || seconds >= 86_400) return ""
+    val s = seconds.roundToInt()
+    return when {
+        s < 60 -> "${s}s"
+        s < 3600 -> "${s / 60}m ${s % 60}s"
+        else -> "${s / 3600}h ${s / 60 % 60}m"
+    }
 }

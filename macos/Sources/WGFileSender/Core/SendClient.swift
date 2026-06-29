@@ -64,13 +64,21 @@ final class SendClient {
         try check(resp, expect: 204)
     }
 
-    func sendFile(to peer: PeerDevice, fileURL: URL, transferId: String,
+    func sendFile(to peer: PeerDevice, fileURL: URL, transferId: String, tryResume: Bool = false,
                   progress: @escaping (Int64, Int64) -> Void) async throws {
         let size = fileSize(fileURL)
         let hash = try sha256(fileURL)
         let id = config.identity
         let encodedName = fileURL.lastPathComponent
             .addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? fileURL.lastPathComponent
+
+        // On a resume attempt, ask the receiver how many bytes it already holds and send
+        // only the rest. First-time sends skip the round-trip and stream the whole file.
+        var offset: Int64 = 0
+        if tryResume, let have = try? await sendStatus(peer: peer, transferId: transferId),
+           have > 0, have < size {
+            offset = have
+        }
 
         var req = URLRequest(url: URL(string: "http://\(peer.peerAddress)/send")!)
         req.httpMethod = "POST"
@@ -82,11 +90,47 @@ final class SendClient {
         req.setValue(hash, forHTTPHeaderField: "X-WGFS-Sha256")
         req.setValue(transferId, forHTTPHeaderField: "X-WGFS-Transfer-Id")
 
+        var uploadURL = fileURL
+        var tempSlice: URL?
+        if offset > 0 {
+            req.setValue("bytes \(offset)-\(size - 1)/\(size)", forHTTPHeaderField: "Content-Range")
+            let slice = try sliceFile(fileURL, from: offset)
+            tempSlice = slice
+            uploadURL = slice
+        }
+        defer { if let t = tempSlice { try? FileManager.default.removeItem(at: t) } }
+
         // Pass the progress delegate per-call (not as a session-level delegate, which
         // deadlocks the async upload variant).
-        let delegate = UploadProgressDelegate(total: size, onProgress: progress)
-        let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: fileURL, delegate: delegate)
+        let delegate = UploadProgressDelegate(total: size, baseline: offset, onProgress: progress)
+        let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: uploadURL, delegate: delegate)
         try check(resp, expect: 200)
+    }
+
+    /// Bytes the receiver already has for this transfer (0 if none / unreachable).
+    private func sendStatus(peer: PeerDevice, transferId: String) async throws -> Int64 {
+        var req = URLRequest(url: URL(string: "http://\(peer.peerAddress)/send/status?transferId=\(transferId)")!)
+        req.setValue("Bearer \(peer.tokenOut)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 15
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try check(resp, expect: 200)
+        return (try? JSONDecoder().decode(SendStatusResponse.self, from: data))?.received ?? 0
+    }
+
+    /// Writes bytes `[offset, end)` of `url` to a temp file for a ranged upload.
+    private func sliceFile(_ url: URL, from offset: Int64) throws -> URL {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".part")
+        FileManager.default.createFile(atPath: tmp.path, contents: nil)
+        let out = try FileHandle(forWritingTo: tmp)
+        defer { try? out.close() }
+        while case let d = handle.readData(ofLength: 1 << 20), !d.isEmpty {
+            try out.write(contentsOf: d)
+        }
+        return tmp
     }
 
     // MARK: helpers
@@ -123,14 +167,16 @@ final class SendClient {
 /// Reports upload progress via the task delegate's didSendBodyData.
 final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate {
     private let total: Int64
+    private let baseline: Int64   // bytes already on the receiver before this (ranged) upload
     private let onProgress: (Int64, Int64) -> Void
-    init(total: Int64, onProgress: @escaping (Int64, Int64) -> Void) {
+    init(total: Int64, baseline: Int64 = 0, onProgress: @escaping (Int64, Int64) -> Void) {
         self.total = total
+        self.baseline = baseline
         self.onProgress = onProgress
     }
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
                     totalBytesExpectedToSend: Int64) {
-        onProgress(totalBytesSent, total)
+        onProgress(baseline + totalBytesSent, total)
     }
 }

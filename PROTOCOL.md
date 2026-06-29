@@ -50,8 +50,11 @@ Liveness + identity probe. No auth required (used before/while pairing).
 ### `POST /pair/request`
 
 Initiator → responder. Opens a pairing session; responder shows an accept prompt.
-The **same 6-digit PIN** is derived on both sides from the session and shown for human
-verification (the user confirms the digits match before accepting).
+The initiator generates a **6-digit PIN** and includes it in the request; the responder
+displays it so the user can confirm it matches the digits shown on the initiator. This is a
+human "is this the request I just started?" check — actual MITM resistance comes from the
+WireGuard tunnel, not from the PIN (the PIN travels inside the request, so it is not a
+zero-knowledge proof). `sessionId` is carried for future use and is not currently validated.
 
 Request:
 ```json
@@ -103,16 +106,25 @@ Streams one file. Metadata in headers, raw bytes in the body.
 | `Content-Length`        | Bytes in THIS request (may be < file size on resume) |
 | `Content-Range`         | Optional `bytes start-end/total` for resume          |
 
-Receiver writes to `<downloadRoot>/<resolved-sender-name>/<file-name>`, where
+The receiver streams the body to a `<transferId>.part` file, hashing as it writes, then
+moves it to `<downloadRoot>/<resolved-sender-name>/<file-name>` on success.
 `resolved-sender-name` is the receiver's `localName` override or the sender's
 `X-WGFS-Device-Name`. Filename collisions are resolved by appending ` (2)`, ` (3)`, …
 
-Responses: `200 OK` on complete + hash match · `409 Conflict` (hash mismatch) ·
-`401` (bad token) · `403` (sender not paired).
+**Resume.** If `Content-Range`'s start byte equals the size of the existing `.part`, the
+receiver appends (priming its hash with the bytes already on disk); otherwise it starts the
+`.part` fresh. If the connection drops mid-body, the receiver **keeps the `.part`** so the
+sender can resume later (it does not treat a short read as a hash failure). The sender
+discovers the resume point with `GET /send/status` and re-`POST`s with a `Content-Range`.
+
+Responses: `200 OK` on complete body + hash match · `409 Conflict` (full file received but
+hash mismatched — the `.part` is discarded as corrupt) · `400` (incomplete body; `.part`
+kept for resume) · `401` (bad token) · `403` (sender not paired).
 
 ### `GET /send/status?transferId=…`  (auth: Bearer tokenOut)
 
-Lets a sender resume: returns the number of bytes already on disk.
+Lets a sender resume: returns the number of bytes already on the receiver's `.part`
+(0 if none). The sender then re-sends from that offset with a `Content-Range` header.
 ```json
 200 OK
 { "transferId": "…", "received": 1048576 }
