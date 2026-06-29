@@ -34,10 +34,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
-import kotlin.random.Random
 
 /**
  * Singleton coordinator: owns persistence, the shared config, the send client and the
@@ -105,10 +105,18 @@ class AppController(private val context: Context) : ListenerEvents {
     // MARK: incoming pairing (ListenerEvents)
 
     override suspend fun onPairRequest(body: PairRequestBody, address: String): String? {
+        // One prompt at a time; reject overlaps instead of clobbering the pending request.
+        if (pendingPairing.value != null) return null
         val deferred = CompletableDeferred<String?>()
         pairDeferred = deferred
         pendingPairing.value = PendingPairing(body, address)
-        return deferred.await()
+        // PROTOCOL.md: decline/timeout after 60s.
+        val token = withTimeoutOrNull(60_000) { deferred.await() }
+        if (token == null && pairDeferred === deferred) {   // timed out — clean up the prompt
+            pairDeferred = null
+            pendingPairing.value = null
+        }
+        return token
     }
 
     fun acceptIncomingPair() {
@@ -521,11 +529,13 @@ class AppController(private val context: Context) : ListenerEvents {
         /** Auto-retry attempts (each resumes from the receiver's last byte) before parking
          *  a transfer as INTERRUPTED for a manual resume. */
         private const val MAX_SEND_RETRIES = 2
+        // Bearer tokens and the pairing PIN are credentials — use a CSPRNG, not kotlin.random.
+        private val secureRandom = java.security.SecureRandom()
         private fun now() = System.currentTimeMillis()
-        fun randomPin() = "%06d".format(Random.nextInt(0, 1_000_000))
+        fun randomPin() = "%06d".format(secureRandom.nextInt(1_000_000))
         fun pretty(pin: String) = if (pin.length == 6) "${pin.substring(0, 3)} ${pin.substring(3)}" else pin
         fun randomToken(): String {
-            val b = ByteArray(24); Random.nextBytes(b)
+            val b = ByteArray(24); secureRandom.nextBytes(b)
             return Base64.encodeToString(b, Base64.NO_WRAP)
         }
     }

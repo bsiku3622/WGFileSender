@@ -72,11 +72,12 @@ class HttpListener(
                 }
 
                 post("/pair/confirm") {
-                    val token = bearer(call)
-                    if (token == null || config.peerByToken(token) == null)
-                        return@post call.respond(HttpStatusCode.Unauthorized)
+                    val peer = bearer(call)?.let { config.peerByToken(it) }
+                        ?: return@post call.respond(HttpStatusCode.Unauthorized)
                     val body = runCatching { json.decodeFromString<PairConfirmBody>(call.receiveText()) }.getOrNull()
                         ?: return@post call.respond(HttpStatusCode.BadRequest)
+                    // The caller may only confirm its own pairing, not overwrite another peer's token.
+                    if (peer.peerId != body.deviceId) return@post call.respond(HttpStatusCode.Forbidden)
                     events.onPairConfirm(body)
                     call.respond(HttpStatusCode.NoContent)
                 }
@@ -89,6 +90,7 @@ class HttpListener(
                         return@get call.respond(HttpStatusCode.Unauthorized)
                     val transferId = call.request.queryParameters["transferId"]
                         ?: return@get call.respond(HttpStatusCode.BadRequest)
+                    if (!validTransferId(transferId)) return@get call.respond(HttpStatusCode.BadRequest)
                     val size = partFile(transferId).let { if (it.exists()) it.length() else 0L }
                     call.respondText(
                         json.encodeToString(SendStatusResponse(transferId, size)),
@@ -114,10 +116,14 @@ class HttpListener(
             ?: return call.respond(HttpStatusCode.BadRequest)
         val transferId = call.request.headers["X-WGFS-Transfer-Id"]
             ?: return call.respond(HttpStatusCode.BadRequest)
+        if (!validTransferId(transferId)) return call.respond(HttpStatusCode.BadRequest)
         val expected = call.request.headers["X-WGFS-Sha256"]?.lowercase()
             ?: return call.respond(HttpStatusCode.BadRequest)
         val fileName = Uri.decode(rawName)
-        val total = call.request.headers["X-WGFS-File-Size"]?.toLongOrNull() ?: 0L
+        // Require a declared size and match it exactly, so a missing/zero header can't pass an
+        // empty or truncated body off as complete.
+        val total = call.request.headers["X-WGFS-File-Size"]?.toLongOrNull()
+            ?: return call.respond(HttpStatusCode.BadRequest)
         val senderName = call.request.headers["X-WGFS-Device-Name"] ?: peer.peerName
         val folderName = peer.localName?.takeIf { it.isNotBlank() } ?: senderName
 
@@ -163,7 +169,7 @@ class HttpListener(
                     }
                 }
             }
-            complete = received >= total
+            complete = received == total
         } catch (_: Exception) {
             complete = false
         }
@@ -179,7 +185,13 @@ class HttpListener(
             events.onTransferFinish(transferId, TransferState.FAILED, str(S.checksumMismatch, config.language))
             return call.respond(HttpStatusCode.Conflict)
         }
-        val savedUri = saveToTree(folderName, fileName, part)
+        // Saving can throw (storage full, SAF revoked); never let it escape and leave the
+        // transfer stuck ACTIVE with an orphaned .part.
+        val savedUri = try {
+            saveToTree(folderName, fileName, part)
+        } catch (_: Exception) {
+            null
+        }
         part.delete()
         if (savedUri == null) {
             events.onTransferFinish(transferId, TransferState.FAILED, str(S.noDownloadFolder, config.language))
@@ -204,7 +216,8 @@ class HttpListener(
         val safeFolder = folderName.replace('/', '_').ifBlank { "Unknown" }
         val folder = tree.findFile(safeFolder)?.takeIf { it.isDirectory }
             ?: tree.createDirectory(safeFolder) ?: return null
-        val target = newChild(folder, fileName) ?: return null
+        val safeName = fileName.replace('/', '_').replace("..", "_").ifBlank { "file" }
+        val target = newChild(folder, safeName) ?: return null
         val out = context.contentResolver.openOutputStream(target.uri) ?: return null
         out.use { o -> source.inputStream().use { it.copyTo(o) } }
         return target.uri.toString()
@@ -224,4 +237,10 @@ class HttpListener(
         val a = call.request.headers["Authorization"] ?: return null
         return if (a.startsWith("Bearer ", ignoreCase = true)) a.substring(7) else null
     }
+
+    /** Transfer ids index file paths; accept only UUID-shaped values (hex + hyphen) to
+     *  block `../` traversal via the X-WGFS-Transfer-Id header. */
+    private fun validTransferId(id: String): Boolean =
+        id.isNotEmpty() && id.length <= 64 &&
+            id.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == '-' }
 }

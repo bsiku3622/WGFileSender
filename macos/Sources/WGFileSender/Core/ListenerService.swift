@@ -80,20 +80,22 @@ final class ListenerService {
     }
 
     private func handlePairConfirm(_ req: HTTPRequest, _ body: BodyStream) async -> HTTPResponse {
-        guard let token = req.bearerToken, config.peer(forToken: token) != nil else {
+        guard let token = req.bearerToken, let peer = config.peer(forToken: token) else {
             return .status(401)
         }
         let data = await body.readAll()
         guard let payload = try? JSONDecoder().decode(PairConfirmBody.self, from: data) else {
             return .status(400)
         }
+        // The caller may only confirm its own pairing — not overwrite another peer's tokenOut.
+        guard peer.peerId == payload.deviceId else { return .status(403) }
         events.onPairConfirm(payload)
         return HTTPResponse(status: 204)
     }
 
     private func handleSendStatus(_ req: HTTPRequest) -> HTTPResponse {
         guard let token = req.bearerToken, config.peer(forToken: token) != nil,
-              let transferId = req.query["transferId"] else {
+              let transferId = req.query["transferId"], Self.isSafeTransferId(transferId) else {
             return .status(401)
         }
         let size = partFileSize(transferId: transferId)
@@ -107,6 +109,7 @@ final class ListenerService {
         guard let rawName = req.header("x-wgfs-file-name"),
               let fileName = rawName.removingPercentEncoding,
               let transferId = req.header("x-wgfs-transfer-id"),
+              Self.isSafeTransferId(transferId),
               let expectedHash = req.header("x-wgfs-sha256") else {
             return .status(400)
         }
@@ -149,13 +152,22 @@ final class ListenerService {
             state: .active, startedAt: Date()))
 
         var received = startOffset
+        var writeFailed = false
         while let chunk = await body.read() {
-            try? handle.write(contentsOf: chunk)
+            do { try handle.write(contentsOf: chunk) }
+            catch { writeFailed = true; break }   // don't fold undelivered bytes into the hash
             hasher.update(data: chunk)
             received += Int64(chunk.count)
             events.onTransferProgress(transferId, received)
         }
         try? handle.close()
+
+        // A disk/IO write error isn't a hash problem — keep the .part so it can be resumed,
+        // never deliver a short file with a (wrongly) matching digest.
+        if writeFailed {
+            events.onTransferFinish(transferId, .interrupted, L(.connectionLost, .current), nil)
+            return .status(500)
+        }
 
         // Peer hung up before delivering the whole body — keep the .part for a later resume.
         guard body.isComplete else {
@@ -171,7 +183,13 @@ final class ListenerService {
         }
 
         let finalURL = uniqueURL(in: folder, fileName: fileName)
-        try? fm.moveItem(at: partURL, to: finalURL)
+        do {
+            try fm.moveItem(at: partURL, to: finalURL)
+        } catch {
+            // The bytes are fine but we couldn't place the file — don't claim success.
+            events.onTransferFinish(transferId, .failed, L(.saveFailed, .current), nil)
+            return .status(500)
+        }
         events.onTransferFinish(transferId, .completed, nil, finalURL.path)
         return .status(200)
     }
@@ -181,6 +199,12 @@ final class ListenerService {
         let trimmed = header.lowercased().replacingOccurrences(of: "bytes ", with: "")
         guard let dash = trimmed.firstIndex(of: "-") else { return nil }
         return Int64(trimmed[trimmed.startIndex..<dash])
+    }
+
+    /// Transfer ids are used in file paths, so accept only UUID-shaped values (hex + hyphen)
+    /// — blocks `../` traversal via the X-WGFS-Transfer-Id header.
+    private static func isSafeTransferId(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 64 && id.allSatisfy { $0.isHexDigit || $0 == "-" }
     }
 
     // MARK: file helpers

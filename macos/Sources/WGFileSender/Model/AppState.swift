@@ -142,9 +142,22 @@ final class AppState: ObservableObject {
     // MARK: incoming pairing
 
     private func awaitIncomingPair(body: PairRequestBody, address: String) async -> String? {
-        await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+        // One prompt at a time: reject overlaps instead of clobbering the pending
+        // continuation (which would leave the earlier request hung forever).
+        if pendingPairing != nil { return nil }
+        let sessionId = body.sessionId
+        return await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
             pairContinuation = cont
             pendingPairing = PendingPairing(body: body, address: address)
+            // PROTOCOL.md: decline/timeout after 60s.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                guard let self, self.pendingPairing?.body.sessionId == sessionId,
+                      let c = self.pairContinuation else { return }
+                self.pendingPairing = nil
+                self.pairContinuation = nil
+                c.resume(returning: nil)
+            }
         }
     }
 
