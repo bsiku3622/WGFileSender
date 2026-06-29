@@ -58,6 +58,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -68,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.jaewonbaek.wgfilesender.data.AppController
+import com.jaewonbaek.wgfilesender.data.NetInfo
 import com.jaewonbaek.wgfilesender.model.PeerDevice
 import com.jaewonbaek.wgfilesender.model.Transfer
 import com.jaewonbaek.wgfilesender.model.TransferDirection
@@ -410,6 +413,7 @@ private fun SettingsScreen(controller: AppController) {
     val running by controller.listenerRunning.collectAsState()
     val error by controller.listenerError.collectAsState()
     val lang = LocalLang.current
+    val clipboard = LocalClipboardManager.current
 
     var name by remember(identity.deviceName) { mutableStateOf(identity.deviceName) }
     var port by remember(settings.port) { mutableStateOf(settings.port.toString()) }
@@ -432,6 +436,18 @@ private fun SettingsScreen(controller: AppController) {
                 ShadTextField(name, { name = it }, t(S.deviceNamePlaceholder))
                 Spacer(Modifier.height(10.dp))
                 ShadButton(t(S.saveName), { controller.setDeviceName(name) }, variant = BtnVariant.Outline)
+                val myAddr = remember { NetInfo.tunnelIPv4Addresses().firstOrNull() }
+                if (myAddr != null) {
+                    Spacer(Modifier.height(16.dp))
+                    Text(t(S.myAddress), color = Shad.mutedForeground, fontSize = 12.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("$myAddr:${settings.port}", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        ShadButton(t(S.copy), {
+                            clipboard.setText(AnnotatedString("$myAddr:${settings.port}"))
+                        }, variant = BtnVariant.Outline)
+                    }
+                }
             }
         }
         item {

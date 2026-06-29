@@ -35,7 +35,8 @@ enum class S {
     updates, currentVersion, checkForUpdates, checkingForUpdates, upToDate,
     updateAvailable, whatsNew, downloadUpdate, downloadingUpdate, installUpdate,
     updateDownloadedHint, updateCheckFailed, retry, later,
-    notifTransferring, backgroundReceive, backgroundReceiveHint
+    notifTransferring, backgroundReceive, backgroundReceiveHint,
+    myAddress, copy
 }
 
 val LocalLang = staticCompositionLocalOf { Lang.EN }
@@ -115,6 +116,8 @@ fun str(key: S, lang: Lang): String {
         S.backgroundReceive -> if (ko) "백그라운드 수신" else "Background receive"
         S.backgroundReceiveHint -> if (ko) "끄면 알림이 사라지고, 켜질 때까지 파일을 받지 않습니다."
         else "When off, the notification goes away and files aren't received until you turn it back on."
+        S.myAddress -> if (ko) "내 주소" else "My address"
+        S.copy -> if (ko) "복사" else "Copy"
         S.open -> if (ko) "열기" else "Open"
         S.delete -> if (ko) "삭제" else "Delete"
         S.renameFile -> if (ko) "파일 이름 변경" else "Rename File"

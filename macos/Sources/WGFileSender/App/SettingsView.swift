@@ -25,6 +25,18 @@ struct SettingsView: View {
                         .lineLimit(1).truncationMode(.middle)
                         .textSelection(.enabled)
                 }
+                if let addr = NetInfo.tunnelIPv4Addresses().first {
+                    LabeledContent(L(.myAddress, lang)) {
+                        HStack(spacing: 8) {
+                            Text("\(addr):\(Int(state.settings.port))")
+                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            Button(L(.copy, lang)) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString("\(addr):\(Int(state.settings.port))", forType: .string)
+                            }
+                        }
+                    }
+                }
             }
 
             Section(L(.receiving, lang)) {
