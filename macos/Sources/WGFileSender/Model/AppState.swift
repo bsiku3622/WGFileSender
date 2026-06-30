@@ -106,55 +106,12 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Installs the downloaded update: unzips it, swaps the new build over the running app
-    /// via a detached helper, and relaunches. No manual drag-to-Applications.
-    func installUpdate() {
-        guard case .downloaded(let fileURL) = updateState else { return }
-        guard fileURL.pathExtension.lowercased() == "zip" else {
-            // Non-zip asset (e.g. a .dmg) — fall back to opening it for the user.
-            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
-            NSWorkspace.shared.open(fileURL)
-            return
-        }
-        do {
-            let fm = FileManager.default
-            let work = fm.temporaryDirectory.appendingPathComponent("wgfs-update-\(UUID().uuidString)")
-            try fm.createDirectory(at: work, withIntermediateDirectories: true)
-            try runProcess("/usr/bin/ditto", ["-x", "-k", fileURL.path, work.path])
-            guard let newApp = (try? fm.contentsOfDirectory(at: work, includingPropertiesForKeys: nil))?
-                .first(where: { $0.pathExtension == "app" }) else {
-                updateState = .failed("No app found in the downloaded archive"); return
-            }
-            // Helper waits for us to quit, replaces the bundle in place, then relaunches it.
-            let currentApp = Bundle.main.bundleURL
-            let pid = ProcessInfo.processInfo.processIdentifier
-            let script = """
-            #!/bin/bash
-            while /bin/kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
-            /bin/rm -rf "\(currentApp.path)"
-            /bin/cp -R "\(newApp.path)" "\(currentApp.path)"
-            /usr/bin/xattr -dr com.apple.quarantine "\(currentApp.path)" 2>/dev/null
-            /usr/bin/open "\(currentApp.path)"
-            """
-            let scriptURL = work.appendingPathComponent("swap.sh")
-            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-            proc.arguments = [scriptURL.path]
-            try proc.run()
-            NSApp.terminate(nil)   // quit so the helper can replace us
-        } catch {
-            updateState = .failed(error.localizedDescription)
-        }
-    }
-
-    private func runProcess(_ path: String, _ args: [String]) throws {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        try p.run()
-        p.waitUntilExit()
-        if p.terminationStatus != 0 { throw WGFSError.badResponse }
+    /// Reveals the downloaded file in Finder and opens it (unzips a .zip) so the user can
+    /// replace the app — we don't swap it out from under the running process.
+    func revealUpdate() {
+        guard case .downloaded(let url) = updateState else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        NSWorkspace.shared.open(url)
     }
 
     func dismissUpdate() { updateState = .idle }
