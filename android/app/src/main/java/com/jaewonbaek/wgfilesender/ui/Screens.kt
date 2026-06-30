@@ -251,7 +251,8 @@ private fun TransfersScreen(controller: AppController) {
 @Composable
 private fun TransfersSummary(transfers: List<Transfer>) {
     val total = transfers.size
-    val active = transfers.count { it.state == TransferState.ACTIVE }
+    val sending = transfers.count { it.state == TransferState.ACTIVE && it.direction == TransferDirection.OUTGOING }
+    val receiving = transfers.count { it.state == TransferState.ACTIVE && it.direction == TransferDirection.INCOMING }
     val waiting = transfers.count { it.state == TransferState.PENDING || it.state == TransferState.QUEUED }
     val done = transfers.filter { it.state == TransferState.COMPLETED }
     val failed = transfers.count { it.state == TransferState.FAILED }
@@ -276,7 +277,8 @@ private fun TransfersSummary(transfers: List<Transfer>) {
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (active > 0) StatChip(t(S.statActive), active, Shad.accent)
+            if (sending > 0) StatChip(t(S.sending), sending, Shad.sent)
+            if (receiving > 0) StatChip(t(S.receivingNow), receiving, Shad.received)
             if (waiting > 0) StatChip(t(S.queued), waiting, Shad.mutedForeground)
             if (done.isNotEmpty()) StatChip(t(S.statDone), done.size, Shad.received, doneBytes.humanBytes())
             if (failed > 0) StatChip(t(S.failed), failed, Shad.destructive)

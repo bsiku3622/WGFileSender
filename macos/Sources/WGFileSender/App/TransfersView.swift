@@ -50,7 +50,8 @@ struct TransfersView: View {
     @ViewBuilder private var summaryBar: some View {
         let t = state.transfers
         let total = t.count
-        let active = t.filter { $0.state == .active }.count
+        let sending = t.filter { $0.state == .active && $0.direction == .outgoing }.count
+        let receiving = t.filter { $0.state == .active && $0.direction == .incoming }.count
         let waiting = t.filter { $0.state == .pending || $0.state == .queued }.count
         let done = t.filter { $0.state == .completed }
         let failed = t.filter { $0.state == .failed }.count
@@ -64,7 +65,8 @@ struct TransfersView: View {
             }
             ProgressView(value: total > 0 ? Double(done.count) / Double(total) : 0).tint(.green)
             HStack(spacing: 16) {
-                if active > 0 { stat(L(.statActive, lang), active, .accentColor) }
+                if sending > 0 { stat(L(.sending, lang), sending, .orange) }
+                if receiving > 0 { stat(L(.receivingActive, lang), receiving, .green) }
                 if waiting > 0 { stat(L(.queued, lang), waiting, .secondary) }
                 if !done.isEmpty { stat(L(.statDone, lang), done.count, .green, detail: doneBytes.humanBytes) }
                 if failed > 0 { stat(L(.failed, lang), failed, .red) }
