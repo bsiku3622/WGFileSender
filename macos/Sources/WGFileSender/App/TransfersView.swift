@@ -124,7 +124,7 @@ struct TransferRow: View {
     private var subtitle: String {
         let dir = transfer.direction == .incoming ? L(.from, lang) : L(.to, lang)
         switch transfer.state {
-        case .queued:
+        case .pending, .queued:
             return "\(dir) \(transfer.peerName) · \(L(.queued, lang))"
         case .active:
             if let e = transfer.error, !e.isEmpty {   // reconnecting between auto-retries
@@ -151,7 +151,7 @@ struct TransferRow: View {
         switch transfer.state {
         case .failed: return .red
         case .interrupted: return .yellow
-        case .queued: return .secondary
+        case .pending, .queued: return .secondary
         default: return transfer.direction == .incoming ? .green : .orange
         }
     }

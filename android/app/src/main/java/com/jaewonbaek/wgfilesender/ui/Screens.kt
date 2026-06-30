@@ -286,7 +286,7 @@ private fun TransferCard(controller: AppController, transfer: Transfer, rate: Do
             val tint = when {
                 transfer.state == TransferState.FAILED -> Shad.destructive
                 transfer.state == TransferState.INTERRUPTED -> Shad.sent   // amber-ish, "paused"
-                transfer.state == TransferState.QUEUED -> Shad.mutedForeground
+                transfer.state == TransferState.QUEUED || transfer.state == TransferState.PENDING -> Shad.mutedForeground
                 incoming -> Shad.received   // green
                 else -> Shad.sent           // orange
             }
@@ -387,7 +387,7 @@ private fun TransferCard(controller: AppController, transfer: Transfer, rate: Do
 private fun subtitle(transfer: Transfer, lang: Lang, rate: Double? = null): String {
     val dir = if (transfer.direction == TransferDirection.INCOMING) str(S.from, lang) else str(S.to, lang)
     return when (transfer.state) {
-        TransferState.QUEUED -> "$dir ${transfer.peerName} · ${str(S.queued, lang)}"
+        TransferState.PENDING, TransferState.QUEUED -> "$dir ${transfer.peerName} · ${str(S.queued, lang)}"
         TransferState.ACTIVE -> {
             val e = transfer.error
             if (!e.isNullOrEmpty()) return "$dir ${transfer.peerName} · $e"   // reconnecting between retries

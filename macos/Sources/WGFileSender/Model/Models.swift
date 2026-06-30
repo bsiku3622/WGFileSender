@@ -1,7 +1,7 @@
 import Foundation
 
 /// Wire protocol version this build implements. See PROTOCOL.md.
-let kProtocolVersion = 1
+let kProtocolVersion = 2
 let kDefaultPort: UInt16 = 51900
 
 /// This device's stable identity, advertised to peers.
@@ -30,24 +30,29 @@ struct PeerDevice: Codable, Identifiable, Equatable {
 }
 
 enum TransferDirection: String, Codable { case incoming, outgoing }
-/// `queued` = waiting for a concurrency slot before it starts. `interrupted` = stopped
-/// before finishing but resumable (partial bytes kept on the receiver). `failed` = a
-/// terminal error (e.g. hash mismatch on a fully-received file).
-enum TransferState: String, Codable { case queued, active, completed, failed, interrupted }
+/// `pending` = known from the manifest but not started (receiver hasn't pulled yet / sender
+/// is waiting to serve). `queued` = waiting for a concurrency slot. `interrupted` = stopped
+/// but resumable. `failed` = terminal (e.g. hash mismatch on a fully-received file).
+enum TransferState: String, Codable { case pending, queued, active, completed, failed, interrupted }
 
-/// One in-flight or finished file transfer, shown in the Transfers tab.
+/// One file within a batch — the unit shown in the Transfers tab. The receiver owns the
+/// durable copy of incoming transfers and pulls the bytes; the sender keeps outgoing ones
+/// so it can serve `/pull`.
 struct Transfer: Codable, Identifiable, Equatable {
-    var id: String
+    var id: String                 // fileId
+    var batchId: String = ""
     var direction: TransferDirection
     var peerName: String
+    var peerId: String = ""
+    var peerAddress: String = ""   // receiver pulls the bytes from here
     var fileName: String
     var totalBytes: Int64
     var transferredBytes: Int64
+    var sha256: String = ""
     var state: TransferState
     var startedAt: Date
     var error: String?
-    var localPath: String? = nil   // sent file's source path, or received file's saved path
-    var peerId: String = ""        // for resending an outgoing transfer
+    var localPath: String? = nil   // sender: source path; receiver: saved path
 
     var progress: Double {
         totalBytes > 0 ? min(1, Double(transferredBytes) / Double(totalBytes)) : 0
@@ -85,7 +90,15 @@ struct PairConfirmBody: Codable {
     let token: String   // token the responder should use as tokenOut
 }
 
-struct SendStatusResponse: Codable {
-    let transferId: String
-    let received: Int64
+/// One file in a batch manifest (sender → receiver via POST /offer).
+struct OfferFile: Codable {
+    let fileId: String
+    let name: String
+    let size: Int64
+    let sha256: String
+}
+
+struct OfferBody: Codable {
+    let batchId: String
+    let files: [OfferFile]
 }

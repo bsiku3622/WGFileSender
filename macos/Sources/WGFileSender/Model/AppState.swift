@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import CryptoKit
 
 @MainActor
 final class AppState: ObservableObject {
@@ -54,6 +55,7 @@ final class AppState: ObservableObject {
         try? FileManager.default.createDirectory(atPath: loadedSettings.downloadRoot,
                                                  withIntermediateDirectories: true)
         startListener()
+        restoreTransfers()   // re-arm outgoing sources + resume incoming pulls
         checkForUpdates(manual: false)   // quiet check once per launch
     }
 
@@ -124,14 +126,11 @@ final class AppState: ObservableObject {
             onPairConfirm: { [weak self] payload in
                 Task { @MainActor in self?.applyPairConfirm(payload) }
             },
-            onTransferStart: { [weak self] t in
-                Task { @MainActor in self?.upsertTransfer(t) }
+            onOffer: { [weak self] offer, peer, senderName in
+                Task { @MainActor in self?.handleOffer(offer, sender: peer, senderName: senderName) }
             },
-            onTransferProgress: { [weak self] id, bytes in
-                Task { @MainActor in self?.updateProgress(id: id, bytes: bytes) }
-            },
-            onTransferFinish: { [weak self] id, state, err, path in
-                Task { @MainActor in self?.finishTransfer(id: id, state: state, error: err, savedPath: path) }
+            onPullProgress: { [weak self] fileId, sent, total in
+                Task { @MainActor in self?.updateOutgoingProgress(fileId, sent: sent, total: total) }
             }
         )
         listener = ListenerService(config: config, events: events)
@@ -215,106 +214,181 @@ final class AppState: ObservableObject {
 
     func dismissOutgoingPair() { outgoingPairing = nil }
 
-    // MARK: sending
-
-    /// Caps concurrent uploads (URLSession per-host limit / receiver load).
-    private let sendLimiter = ConcurrencyLimiter(4)
-    private var activeSendTasks: [String: Task<Void, Never>] = [:]
+    // MARK: sending (announce a manifest, then serve /pull)
 
     func sendFiles(_ urls: [URL], to peer: PeerDevice) {
         guard !urls.isEmpty else { return }
-        selectedTab = 1   // jump to Transfers
+        selectedTab = 1
+        let batchId = UUID().uuidString
+        var entries: [(String, URL)] = []
         for url in urls {
-            let id = UUID().uuidString
-            upsertTransfer(Transfer(id: id, direction: .outgoing, peerName: peer.displayName,
-                                    fileName: url.lastPathComponent, totalBytes: fileSize(url),
-                                    transferredBytes: 0, state: .queued, startedAt: Date(),
-                                    localPath: url.path, peerId: peer.peerId))
-            startSend(id: id, url: url, peer: peer)
+            let fileId = UUID().uuidString
+            upsertTransfer(Transfer(id: fileId, batchId: batchId, direction: .outgoing,
+                peerName: peer.displayName, peerId: peer.peerId, peerAddress: peer.peerAddress,
+                fileName: url.lastPathComponent, totalBytes: fileSize(url), transferredBytes: 0,
+                sha256: "", state: .pending, startedAt: Date(), localPath: url.path))
+            entries.append((fileId, url))
         }
+        persistTransfers()
+        Task { await prepareAndOffer(batchId: batchId, entries: entries, peer: peer) }
     }
 
-    /// Number of auto-retry attempts (each picks up from the receiver's last byte) before
-    /// a transfer is parked as `.interrupted` for a manual resume.
-    private let maxSendRetries = 2
-
-    private func startSend(id: String, url: URL, peer: PeerDevice, resumeFirst: Bool = false) {
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.sendLimiter.acquire()
-            defer { Task { await self.sendLimiter.release() } }
-            if Task.isCancelled { self.markInterrupted(id, error: L(.canceled, .current)); return }
-            self.markActive(id)   // queued → active once a slot frees up
-            await self.performSend(id: id, url: url, peer: peer, resumeFirst: resumeFirst)
+    /// Hashes each file off the main actor, registers it as pullable, then offers the manifest.
+    private func prepareAndOffer(batchId: String, entries: [(String, URL)], peer: PeerDevice) async {
+        var offerFiles: [OfferFile] = []
+        for (fileId, url) in entries {
+            let size = fileSize(url)
+            let hash = await Task.detached(priority: .utility) { computeSHA256(url) ?? "" }.value
+            config.addOutgoing(fileId, OutgoingSource(path: url.path, size: size, sha256: hash))
+            if let i = transfers.firstIndex(where: { $0.id == fileId }) { transfers[i].sha256 = hash }
+            offerFiles.append(OfferFile(fileId: fileId, name: url.lastPathComponent, size: size, sha256: hash))
         }
-        activeSendTasks[id] = task
-    }
-
-    private func performSend(id: String, url: URL, peer: PeerDevice, resumeFirst: Bool) async {
-        var attempt = 0
-        var tryResume = resumeFirst
-        while true {
-            do {
-                try await sendClient.sendFile(to: peer, fileURL: url, transferId: id, tryResume: tryResume) { sent, _ in
-                    Task { @MainActor in self.updateProgress(id: id, bytes: sent) }
-                }
-                finishTransfer(id: id, state: .completed, error: nil)
-                activeSendTasks[id] = nil
-                return
-            } catch is CancellationError {
-                markInterrupted(id, error: L(.canceled, .current)); activeSendTasks[id] = nil; return
-            } catch {
-                if (error as? URLError)?.code == .cancelled {
-                    markInterrupted(id, error: L(.canceled, .current)); activeSendTasks[id] = nil; return
-                }
-                attempt += 1
-                guard attempt <= maxSendRetries else {
-                    markInterrupted(id, error: error.localizedDescription); activeSendTasks[id] = nil; return
-                }
-                // Auto-resume: pause briefly, then continue from the receiver's last byte.
-                setRetrying(id)
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                if Task.isCancelled {
-                    markInterrupted(id, error: L(.canceled, .current)); activeSendTasks[id] = nil; return
-                }
-                tryResume = true
+        persistTransfers()
+        do {
+            try await sendClient.offer(to: peer, batchId: batchId, files: offerFiles)
+            // Now waiting for the receiver to pull; rows stay pending until bytes flow.
+        } catch {
+            for (fileId, _) in entries {
+                finishTransfer(id: fileId, state: .interrupted, error: error.localizedDescription)
             }
         }
+    }
+
+    /// Sender-side progress, driven by the peer pulling bytes via /pull.
+    private func updateOutgoingProgress(_ fileId: String, sent: Int64, total: Int64) {
+        guard let i = transfers.firstIndex(where: { $0.id == fileId }) else { return }
+        if transfers[i].state == .pending || transfers[i].state == .interrupted {
+            transfers[i].state = .active; transfers[i].error = nil
+        }
+        updateProgress(id: fileId, bytes: sent)
+        if sent >= total {
+            finishTransfer(id: fileId, state: .completed, error: nil)
+            config.removeOutgoing(fileId)
+        }
+    }
+
+    // MARK: receiving (pull worker)
+
+    private let smallPull = ConcurrencyLimiter(4)
+    private let largePull = ConcurrencyLimiter(1)    // large files pulled one-at-a-time
+    private let largeThreshold: Int64 = 64 * 1024 * 1024
+    private var pullTasks: [String: Task<Void, Never>] = [:]
+
+    /// Receiver: persist the offered manifest and kick the pull worker.
+    private func handleOffer(_ offer: OfferBody, sender peer: PeerDevice, senderName: String) {
+        for f in offer.files where !transfers.contains(where: { $0.id == f.fileId }) {
+            upsertTransfer(Transfer(id: f.fileId, batchId: offer.batchId, direction: .incoming,
+                peerName: peer.displayName, peerId: peer.peerId, peerAddress: peer.peerAddress,
+                fileName: f.name, totalBytes: f.size, transferredBytes: 0, sha256: f.sha256,
+                state: .pending, startedAt: Date()))
+        }
+        selectedTab = 1
+        persistTransfers()
+        schedulePulls()
+    }
+
+    /// Starts a pull task for every incomplete incoming file not already running.
+    func schedulePulls() {
+        for t in transfers where t.direction == .incoming && Self.incomplete(t.state) && pullTasks[t.id] == nil {
+            let id = t.id
+            if let i = transfers.firstIndex(where: { $0.id == id }), transfers[i].state != .active {
+                transfers[i].state = .queued
+            }
+            pullTasks[id] = Task { [weak self] in await self?.pullWithRetry(id) }
+        }
+    }
+
+    private static func incomplete(_ s: TransferState) -> Bool {
+        s == .pending || s == .queued || s == .active || s == .interrupted || s == .failed
+    }
+
+    /// Pulls one file, retrying indefinitely with backoff (resuming from the .part) until it
+    /// completes or is cancelled — the receiver owns "done", so this never gives up silently.
+    private func pullWithRetry(_ id: String) async {
+        guard let t0 = transfers.first(where: { $0.id == id }) else { pullTasks[id] = nil; return }
+        let limiter = t0.totalBytes >= largeThreshold ? largePull : smallPull
+        await limiter.acquire()
+        defer { Task { await limiter.release() }; pullTasks[id] = nil }
+
+        var backoff: UInt64 = 1_000_000_000
+        while !Task.isCancelled {
+            guard let t = transfers.first(where: { $0.id == id }) else { return }
+            if t.state == .completed { return }
+            guard let peer = peers.first(where: { $0.peerId == t.peerId }) else {
+                markInterrupted(id, error: L(.connectionLost, .current)); return
+            }
+            markActive(id)
+            do {
+                let folderName = peer.localName?.isEmpty == false ? peer.localName! : t.peerName
+                let path = try await sendClient.pullFile(
+                    from: peer, batchId: t.batchId, fileId: id, fileName: t.fileName,
+                    expectedSize: t.totalBytes, expectedHash: t.sha256, senderFolder: folderName,
+                    downloadRoot: settings.downloadRoot,
+                    progress: { sent, _ in Task { @MainActor in self.updateProgress(id: id, bytes: sent) } })
+                finishTransfer(id: id, state: .completed, error: nil, savedPath: path)
+                return
+            } catch is CancellationError {
+                markInterrupted(id, error: L(.canceled, .current)); return
+            } catch {
+                setRetrying(id)
+                try? await Task.sleep(nanoseconds: backoff)
+                if Task.isCancelled { markInterrupted(id, error: L(.canceled, .current)); return }
+                backoff = min(backoff * 2, 30_000_000_000)   // cap 30s
+            }
+        }
+        markInterrupted(id, error: L(.canceled, .current))
     }
 
     private func markInterrupted(_ id: String, error: String) {
         finishTransfer(id: id, state: .interrupted, error: error)
     }
 
-    /// queued → active once a concurrency slot opens.
     private func markActive(_ id: String) {
         guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
-        if transfers[i].state == .queued { transfers[i].state = .active }
+        if transfers[i].state != .active && transfers[i].state != .completed {
+            transfers[i].state = .active; transfers[i].error = nil
+        }
     }
 
-    /// Keeps the row active but flags that we're reconnecting between auto-retry attempts.
     private func setRetrying(_ id: String) {
         guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
         transfers[i].error = L(.retrying, .current)
-        clearRate(id)   // rate restarts when bytes flow again
+        clearRate(id)
     }
 
-    /// Cancels an in-flight outgoing transfer. The partial bytes are kept on the receiver
-    /// so it can be resumed later.
-    func cancelTransfer(_ transfer: Transfer) {
-        activeSendTasks[transfer.id]?.cancel()
-    }
-
-    /// Resumes an interrupted/failed outgoing transfer from where the receiver left off
-    /// (a fresh receiver with no partial bytes simply re-sends the whole file).
-    func resumeTransfer(_ transfer: Transfer) {
-        guard transfer.direction == .outgoing, let path = transfer.localPath,
-              let peer = peers.first(where: { $0.peerId == transfer.peerId }) else { return }
-        if let i = transfers.firstIndex(where: { $0.id == transfer.id }) {
-            transfers[i].state = .active
-            transfers[i].error = nil   // keep transferredBytes: we continue, not restart
+    /// Re-registers outgoing sources and resumes incoming pulls after a restart.
+    private func restoreTransfers() {
+        for t in transfers where t.direction == .outgoing && t.state != .completed && t.state != .failed {
+            if let p = t.localPath, !t.sha256.isEmpty {
+                config.addOutgoing(t.id, OutgoingSource(path: p, size: t.totalBytes, sha256: t.sha256))
+            }
         }
-        startSend(id: transfer.id, url: URL(fileURLWithPath: path), peer: peer, resumeFirst: true)
+        schedulePulls()
+    }
+
+    /// Cancels a transfer. Incoming: stops the pull (resumable). Outgoing: stops serving it.
+    func cancelTransfer(_ transfer: Transfer) {
+        if transfer.direction == .incoming {
+            pullTasks[transfer.id]?.cancel()
+        } else {
+            config.removeOutgoing(transfer.id)
+            markInterrupted(transfer.id, error: L(.canceled, .current))
+        }
+    }
+
+    /// Resumes a transfer. Incoming: re-queue the pull. Outgoing: re-arm serving.
+    func resumeTransfer(_ transfer: Transfer) {
+        if transfer.direction == .incoming {
+            if let i = transfers.firstIndex(where: { $0.id == transfer.id }) {
+                transfers[i].state = .pending; transfers[i].error = nil
+            }
+            schedulePulls()
+        } else if let path = transfer.localPath, !transfer.sha256.isEmpty {
+            config.addOutgoing(transfer.id, OutgoingSource(path: path, size: transfer.totalBytes, sha256: transfer.sha256))
+            if let i = transfers.firstIndex(where: { $0.id == transfer.id }) {
+                transfers[i].state = .pending; transfers[i].error = nil
+            }
+        }
     }
 
     // MARK: peers
@@ -413,9 +487,10 @@ final class AppState: ObservableObject {
         persistTransfers()
     }
 
-    /// Persist finished transfers only; in-flight ones are gone after a restart anyway.
+    /// Persist the whole list — incoming pulls and outgoing offers must survive a restart so
+    /// the worker can resume them (the receiver owns durable transfer state).
     private func persistTransfers() {
-        store.save(transfers: transfers.filter { $0.state != .active && $0.state != .queued })
+        store.save(transfers: transfers)
     }
 
     func openDownloadFolder() {
@@ -494,4 +569,13 @@ final class AppState: ObservableObject {
         let bytes = (0..<24).map { _ in UInt8.random(in: 0...255) }
         return Data(bytes).base64EncodedString()
     }
+}
+
+/// SHA-256 hex of a file, safe to call off the main actor (used while hashing a batch).
+func computeSHA256(_ url: URL) -> String? {
+    guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while case let chunk = handle.readData(ofLength: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 }

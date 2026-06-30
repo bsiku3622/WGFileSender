@@ -1,9 +1,14 @@
-# WGFileSender Wire Protocol v1
+# WGFileSender Wire Protocol v2
 
-The single source of truth for every client implementation (macOS, Android, later Windows).
-All clients speak plain **HTTP/1.1** over the WireGuard tunnel. WireGuard already provides
-encryption and peer authentication at the network layer, so the application layer only needs
-to (a) verify a human-confirmed pairing and (b) authorize each request with a shared token.
+The single source of truth for every client (macOS, Android, later Windows). All clients
+speak plain **HTTP/1.1** over the WireGuard tunnel. WireGuard provides encryption and peer
+authentication at the network layer, so the application layer only (a) verifies a
+human-confirmed pairing and (b) authorizes each request with a shared token.
+
+**Transfer model: pull.** The sender *offers* a manifest; the receiver *pulls* the bytes.
+The receiver owns the durable state (what's left to fetch) and decides ordering, concurrency
+and retries. A file is "done" only when the receiver has it complete and hash-verified on
+disk — there is no ambiguity about whether a transfer half-happened.
 
 ## Transport
 
@@ -14,12 +19,12 @@ to (a) verify a human-confirmed pairing and (b) authorize each request with a sh
 
 ## Identity
 
-Every device has, generated on first launch and stored locally:
+Generated on first launch, stored locally:
 
 | Field        | Description                                               |
 |--------------|-----------------------------------------------------------|
 | `deviceId`   | UUID, stable for the lifetime of the install              |
-| `deviceName` | Human name the device advertises (sender-default)         |
+| `deviceName` | Human name the device advertises                          |
 | `platform`   | `"macos"` \| `"android"` \| `"windows"`                   |
 
 A pairing produces, on **each** side, a record about the peer:
@@ -34,103 +39,84 @@ A pairing produces, on **each** side, a record about the peer:
 | `tokenIn`      | Token THIS device expects FROM the peer (this device issued)|
 
 Authorization: every authenticated request carries `Authorization: Bearer <tokenOut>`.
-The receiver validates the bearer token against the `tokenIn` it issued for that peer.
+The responder validates it against the `tokenIn` it issued for that peer. This holds for
+**both** directions — the sender authorizes `/offer`, the receiver authorizes `/pull` —
+because each side presents its own `tokenOut` and the other validates its own `tokenIn`.
 
-## Endpoints
+## Pairing (unchanged from v1)
 
 ### `GET /ping`
-
-Liveness + identity probe. No auth required (used before/while pairing).
-
+Liveness + identity probe. No auth (used before/while pairing).
 ```json
 200 OK
-{ "deviceId": "…", "deviceName": "Jaewon's Mac", "platform": "macos", "protocol": 1 }
+{ "deviceId": "…", "deviceName": "Jaewon's Mac", "platform": "macos", "protocol": 2 }
 ```
 
 ### `POST /pair/request`
+Initiator → responder. The initiator generates a **6-digit PIN** and includes it; the
+responder displays it for the user to confirm it matches. MITM resistance comes from the
+WireGuard tunnel, not the PIN. `sessionId` is reserved.
+```json
+{ "deviceId":"…","deviceName":"…","platform":"…","sessionId":"…","pin":"428917","port":51900 }
+```
+Responder: prompt, then on accept issue `tokenIn` for the initiator and reply; on decline or
+**60s timeout**, `403`. Only one pairing prompt at a time.
+```json
+200 OK
+{ "deviceId":"…","deviceName":"…","platform":"…","token":"<initiator's tokenOut>" }
+```
 
-Initiator → responder. Opens a pairing session; responder shows an accept prompt.
-The initiator generates a **6-digit PIN** and includes it in the request; the responder
-displays it so the user can confirm it matches the digits shown on the initiator. This is a
-human "is this the request I just started?" check — actual MITM resistance comes from the
-WireGuard tunnel, not from the PIN (the PIN travels inside the request, so it is not a
-zero-knowledge proof). `sessionId` is carried for future use and is not currently validated.
+### `POST /pair/confirm`  (auth: Bearer tokenOut)
+Initiator → responder, completes the symmetric exchange. The caller may only confirm its own
+pairing (`deviceId` must match the authenticated peer).
+```json
+{ "deviceId":"…","token":"<responder's tokenOut>" }
+```
+`204 No Content`.
+
+## Transfers (pull model)
+
+### `POST /offer`  (auth: Bearer tokenOut)
+
+Sender → receiver. Announces a batch of files. The receiver stores the manifest durably,
+creates a `pending` entry per file, and starts pulling in the background. The sender keeps
+each file's local source reachable (path / persisted content-URI) so it can serve `/pull`.
 
 Request:
 ```json
-{ "deviceId": "…", "deviceName": "Jaewon's Mac", "platform": "macos",
-  "sessionId": "…", "pin": "428917", "port": 51900 }
+{
+  "batchId": "uuid",
+  "files": [
+    { "fileId": "uuid", "name": "20260625_141234.mp4", "size": 734003200, "sha256": "<hex>" }
+  ]
+}
 ```
+`X-WGFS-Device-Id` / `X-WGFS-Device-Name` headers identify the sender (for the subfolder).
+Response: `200 OK` (manifest accepted) · `401` (bad token) · `403` (not paired).
 
-`port` is the initiator's own listener port. The responder combines it with the source
-IP of the TCP connection to form the address it will use to reach the initiator back
-(the initiator already knows the responder's address — the user typed it).
+### `GET /pull?batch=<batchId>&file=<fileId>`  (auth: Bearer tokenOut)
 
-Responder behavior:
-- Display prompt: "<deviceName> wants to pair — PIN 428 917".
-- On user **accept**: issue `tokenIn` for the initiator, respond below.
-- On user **decline** or timeout (60s): `403`.
+Receiver → sender. Streams the file's bytes. The receiver controls ordering, concurrency
+(large files one-at-a-time, small files batched) and retries.
 
-Response on accept:
-```json
-200 OK
-{ "deviceId": "…", "deviceName": "Jaewon's Android", "platform": "android",
-  "token": "<token the initiator should use as tokenOut>" }
-```
+| Request header | Meaning                                          |
+|----------------|--------------------------------------------------|
+| `Range`        | `bytes=<start>-` to resume from a byte offset    |
 
-The initiator, on `200`, stores the peer record and issues its **own** `tokenIn` for the
-peer, then pushes it via `POST /pair/confirm` so the link is symmetric.
+Responses:
+- `200 OK` — full file; `Content-Length` = size.
+- `206 Partial Content` — ranged; `Content-Range: bytes <start>-<end>/<size>`.
+- `401` bad token · `403` not paired · `404` unknown batch/file · `410` source no longer available.
 
-### `POST /pair/confirm`  (auth: Bearer tokenOut)
+The receiver writes to `<downloadRoot>/<resolved-sender-name>/<file-name>` via a
+`<fileId>.part`, hashing as it writes; on full receipt + `sha256` match it moves the part to
+the final name (collisions → ` (2)`, ` (3)`, …) and marks the file complete. A mismatch or
+short read keeps the `.part` and the file is retried (resumed from `Range`).
 
-Initiator → responder, completes the symmetric exchange.
-```json
-{ "deviceId": "…", "token": "<token the responder should use as tokenOut>" }
-```
-Response: `204 No Content`.
-
-After this, both sides hold `{tokenOut, tokenIn}` for each other and pairing is complete.
-
-### `POST /send`  (auth: Bearer tokenOut)
-
-Streams one file. Metadata in headers, raw bytes in the body.
-
-| Header                  | Meaning                                              |
-|-------------------------|------------------------------------------------------|
-| `X-WGFS-Device-Id`      | Sender `deviceId` (must match a paired peer)         |
-| `X-WGFS-Device-Name`    | Sender's advertised name (used for the subfolder)    |
-| `X-WGFS-File-Name`      | Original filename (percent-encoded UTF-8)            |
-| `X-WGFS-File-Size`      | Total bytes (decimal)                                |
-| `X-WGFS-Sha256`         | Lowercase hex digest of the full file                |
-| `X-WGFS-Transfer-Id`    | UUID identifying this transfer (for resume)          |
-| `Content-Length`        | Bytes in THIS request (may be < file size on resume) |
-| `Content-Range`         | Optional `bytes start-end/total` for resume          |
-
-The receiver streams the body to a `<transferId>.part` file, hashing as it writes, then
-moves it to `<downloadRoot>/<resolved-sender-name>/<file-name>` on success.
-`resolved-sender-name` is the receiver's `localName` override or the sender's
-`X-WGFS-Device-Name`. Filename collisions are resolved by appending ` (2)`, ` (3)`, …
-
-**Resume.** If `Content-Range`'s start byte equals the size of the existing `.part`, the
-receiver appends (priming its hash with the bytes already on disk); otherwise it starts the
-`.part` fresh. If the connection drops mid-body, the receiver **keeps the `.part`** so the
-sender can resume later (it does not treat a short read as a hash failure). The sender
-discovers the resume point with `GET /send/status` and re-`POST`s with a `Content-Range`.
-
-Responses: `200 OK` on complete body + hash match · `409 Conflict` (full file received but
-hash mismatched — the `.part` is discarded as corrupt) · `400` (incomplete body; `.part`
-kept for resume) · `401` (bad token) · `403` (sender not paired).
-
-### `GET /send/status?transferId=…`  (auth: Bearer tokenOut)
-
-Lets a sender resume: returns the number of bytes already on the receiver's `.part`
-(0 if none). The sender then re-sends from that offset with a `Content-Range` header.
-```json
-200 OK
-{ "transferId": "…", "received": 1048576 }
-```
+There is no separate status endpoint: the receiver already knows how many bytes it holds
+(its own `.part`) and simply pulls the rest.
 
 ## Versioning
 
-`protocol` integer in `/ping` is bumped on breaking changes. v1 clients refuse peers
-advertising a higher major they don't understand.
+`protocol` integer in `/ping` is `2`. v2 is **not** compatible with v1 (the push `/send`
+endpoints are gone); clients refuse peers advertising a different major.

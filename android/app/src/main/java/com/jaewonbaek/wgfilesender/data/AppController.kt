@@ -9,6 +9,8 @@ import android.util.Base64
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.jaewonbaek.wgfilesender.model.Identity
+import com.jaewonbaek.wgfilesender.model.OfferBody
+import com.jaewonbaek.wgfilesender.model.OfferFile
 import com.jaewonbaek.wgfilesender.model.PairConfirmBody
 import com.jaewonbaek.wgfilesender.model.PairRequestBody
 import com.jaewonbaek.wgfilesender.model.PeerDevice
@@ -76,6 +78,7 @@ class AppController(private val context: Context) : ListenerEvents {
 
     init {
         config.language = language.value
+        restoreTransfers()   // re-arm outgoing sources + resume incoming pulls
         checkForUpdates(manual = false)   // quiet check once per process start
     }
 
@@ -140,10 +143,10 @@ class AppController(private val context: Context) : ListenerEvents {
         upsertPeer(peer.copy(tokenOut = body.token))
     }
 
-    override fun onTransferStart(transfer: Transfer) = upsertTransfer(transfer)
-    override fun onTransferProgress(id: String, bytes: Long) = updateProgress(id, bytes)
-    override fun onTransferFinish(id: String, state: TransferState, error: String?, savedPath: String?) =
-        finishTransfer(id, state, error, savedPath)
+    override fun onOffer(offer: OfferBody, peer: PeerDevice, senderName: String) =
+        handleOffer(offer, peer, senderName)
+    override fun onPullProgress(fileId: String, sent: Long, total: Long) =
+        updateOutgoingProgress(fileId, sent, total)
 
     // MARK: outgoing pairing
 
@@ -239,108 +242,181 @@ class AppController(private val context: Context) : ListenerEvents {
         }
     }
 
-    // MARK: sending
+    // MARK: sending (announce a manifest, then serve /pull)
 
     fun setTab(index: Int) { selectedTab.value = index }
 
-    // Cap concurrent uploads so sending many files doesn't swamp the receiver.
-    private val sendSemaphore = Semaphore(4)
-    private val activeSendJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
-
     fun sendFiles(uris: List<Uri>, peer: PeerDevice) {
-        if (uris.isNotEmpty()) selectedTab.value = 1   // jump to Transfers
-        for (uri in uris) {
+        if (uris.isEmpty()) return
+        selectedTab.value = 1
+        val batchId = UUID.randomUUID().toString()
+        val entries = uris.map { uri ->
             val meta = UriUtil.metadata(context, uri)
-            val transferId = UUID.randomUUID().toString()
-            upsertTransfer(Transfer(transferId, TransferDirection.OUTGOING, peer.displayName,
-                meta.name, meta.size, state = TransferState.QUEUED,
-                localPath = uri.toString(), peerId = peer.peerId))
-            launchSend(transferId, peer, uri, meta.name)
+            val fileId = UUID.randomUUID().toString()
+            upsertTransfer(Transfer(id = fileId, batchId = batchId, direction = TransferDirection.OUTGOING,
+                peerName = peer.displayName, peerId = peer.peerId, peerAddress = peer.peerAddress,
+                fileName = meta.name, totalBytes = meta.size, state = TransferState.PENDING,
+                localPath = uri.toString()))
+            Triple(fileId, uri, meta.name)
         }
+        persistTransfers()
         sharedUris.value = emptyList()
+        scope.launch { prepareAndOffer(batchId, entries, peer) }
     }
 
-    private fun launchSend(
-        transferId: String, peer: PeerDevice, uri: Uri, name: String,
-        resumeFirst: Boolean = false
-    ) {
-        val job = scope.launch {
-            try {
-                sendSemaphore.withPermit {
-                    markActive(transferId)   // queued → active once a slot frees up
-                    var attempt = 0
-                    var tryResume = resumeFirst
-                    while (true) {
-                        try {
-                            sendClient.sendFile(peer, uri, name, transferId, tryResume,
-                                onSize = { updateTotal(transferId, it) }) { sent ->
-                                updateProgress(transferId, sent)
-                            }
-                            finishTransfer(transferId, TransferState.COMPLETED, null)
-                            break
-                        } catch (e: CancellationException) {
-                            // Cancellation is recorded as resumable, then propagated.
-                            finishTransfer(transferId, TransferState.INTERRUPTED, str(S.canceled, language.value))
-                            throw e
-                        } catch (e: Exception) {
-                            attempt++
-                            if (attempt > MAX_SEND_RETRIES) {
-                                finishTransfer(transferId, TransferState.INTERRUPTED, e.message)
-                                break
-                            }
-                            setRetrying(transferId)
-                            try {
-                                delay(1500)   // brief backoff, then resume from the receiver's last byte
-                            } catch (e: CancellationException) {
-                                finishTransfer(transferId, TransferState.INTERRUPTED, str(S.canceled, language.value))
-                                throw e
-                            }
-                            tryResume = true
-                        }
-                    }
-                }
-            } finally {
-                activeSendJobs.remove(transferId)
+    /** Hashes each file (real stream size), registers it as pullable, then offers the manifest. */
+    private suspend fun prepareAndOffer(batchId: String, entries: List<Triple<String, Uri, String>>, peer: PeerDevice) {
+        val offerFiles = entries.map { (fileId, uri, name) ->
+            val (hash, size) = sendClient.hashAndSize(uri)
+            config.addOutgoing(fileId, OutgoingSource(uri.toString(), size, hash))
+            transfers.update { list -> list.map { if (it.id == fileId) it.copy(sha256 = hash, totalBytes = size) else it } }
+            OfferFile(fileId, name, size, hash)
+        }
+        persistTransfers()
+        try {
+            sendClient.offer(peer, batchId, offerFiles)
+        } catch (e: Exception) {
+            entries.forEach { finishTransfer(it.first, TransferState.INTERRUPTED, e.message) }
+        }
+    }
+
+    /** Sender-side progress, driven by the peer pulling bytes via /pull. */
+    private fun updateOutgoingProgress(fileId: String, sent: Long, total: Long) {
+        transfers.update { list ->
+            list.map {
+                if (it.id != fileId) it
+                else it.copy(
+                    state = if (it.state == TransferState.PENDING || it.state == TransferState.INTERRUPTED) TransferState.ACTIVE else it.state,
+                    error = null)
             }
         }
-        activeSendJobs[transferId] = job
+        updateProgress(fileId, sent)
+        if (sent >= total) {
+            finishTransfer(fileId, TransferState.COMPLETED, null)
+            config.removeOutgoing(fileId)
+        }
     }
 
-    /** Keeps the row active but flags that we're reconnecting between auto-retry attempts. */
+    // MARK: receiving (pull worker)
+
+    private val smallPull = Semaphore(4)
+    private val largePull = Semaphore(1)          // large files pulled one-at-a-time
+    private val largeThreshold = 64L * 1024 * 1024
+    private val pullJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    private fun handleOffer(offer: OfferBody, peer: PeerDevice, senderName: String) {
+        val existing = transfers.value.map { it.id }.toSet()
+        for (f in offer.files) {
+            if (f.fileId in existing) continue
+            upsertTransfer(Transfer(id = f.fileId, batchId = offer.batchId, direction = TransferDirection.INCOMING,
+                peerName = peer.displayName, peerId = peer.peerId, peerAddress = peer.peerAddress,
+                fileName = f.name, totalBytes = f.size, sha256 = f.sha256, state = TransferState.PENDING))
+        }
+        selectedTab.value = 1
+        persistTransfers()
+        schedulePulls()
+    }
+
+    /** Starts a pull job for every incomplete incoming file not already running. */
+    fun schedulePulls() {
+        for (t in transfers.value) {
+            if (t.direction != TransferDirection.INCOMING || !incomplete(t.state) || pullJobs.containsKey(t.id)) continue
+            val id = t.id
+            transfers.update { list -> list.map { if (it.id == id && it.state != TransferState.ACTIVE) it.copy(state = TransferState.QUEUED) else it } }
+            pullJobs[id] = scope.launch { pullWithRetry(id) }
+        }
+    }
+
+    private fun incomplete(s: TransferState) =
+        s == TransferState.PENDING || s == TransferState.QUEUED || s == TransferState.ACTIVE ||
+            s == TransferState.INTERRUPTED || s == TransferState.FAILED
+
+    /** Pulls one file, retrying with backoff (resuming from the .part) until it completes or
+     *  is cancelled — the receiver owns "done", so it never gives up silently. */
+    private suspend fun pullWithRetry(id: String) {
+        val t0 = transfers.value.firstOrNull { it.id == id }
+        if (t0 == null) { pullJobs.remove(id); return }
+        val limiter = if (t0.totalBytes >= largeThreshold) largePull else smallPull
+        try {
+            limiter.withPermit {
+                var backoff = 1000L
+                while (true) {
+                    val t = transfers.value.firstOrNull { it.id == id } ?: return@withPermit
+                    if (t.state == TransferState.COMPLETED) return@withPermit
+                    val peer = peers.value.firstOrNull { it.peerId == t.peerId }
+                    if (peer == null) {
+                        finishTransfer(id, TransferState.INTERRUPTED, str(S.connectionLost, language.value)); return@withPermit
+                    }
+                    markActive(id)
+                    try {
+                        val folderName = peer.localName?.takeIf { it.isNotBlank() } ?: t.peerName
+                        val saved = sendClient.pullFile(peer, t.batchId, id, t.fileName, t.totalBytes, t.sha256, folderName) { sent ->
+                            updateProgress(id, sent)
+                        }
+                        finishTransfer(id, TransferState.COMPLETED, null, saved)
+                        return@withPermit
+                    } catch (e: CancellationException) {
+                        finishTransfer(id, TransferState.INTERRUPTED, str(S.canceled, language.value)); throw e
+                    } catch (e: Exception) {
+                        setRetrying(id)
+                        try { delay(backoff) } catch (e: CancellationException) {
+                            finishTransfer(id, TransferState.INTERRUPTED, str(S.canceled, language.value)); throw e
+                        }
+                        backoff = minOf(backoff * 2, 30_000L)   // cap 30s
+                    }
+                }
+            }
+        } finally {
+            pullJobs.remove(id)
+        }
+    }
+
+    /** Re-registers outgoing sources and resumes incoming pulls after a restart. */
+    private fun restoreTransfers() {
+        for (t in transfers.value) {
+            if (t.direction == TransferDirection.OUTGOING && t.state != TransferState.COMPLETED && t.state != TransferState.FAILED) {
+                val uri = t.localPath
+                if (uri != null && t.sha256.isNotEmpty()) config.addOutgoing(t.id, OutgoingSource(uri, t.totalBytes, t.sha256))
+            }
+        }
+        schedulePulls()
+    }
+
     private fun setRetrying(id: String) {
         transfers.update { list ->
             list.map { if (it.id == id) it.copy(error = str(S.retrying, language.value)) else it }
         }
-        clearRate(id)   // rate restarts when bytes flow again
+        clearRate(id)
     }
 
-    /** Cancels an in-flight transfer; partial bytes are kept on the receiver for resume. */
-    fun cancelTransfer(transfer: Transfer) {
-        activeSendJobs[transfer.id]?.cancel()
-    }
-
-    /** Resumes an interrupted/failed transfer from where the receiver left off. */
-    fun resumeTransfer(transfer: Transfer) {
-        if (transfer.direction != TransferDirection.OUTGOING) return
-        val uri = transfer.localPath?.let { Uri.parse(it) } ?: return
-        val peer = peers.value.firstOrNull { it.peerId == transfer.peerId } ?: return
-        val meta = UriUtil.metadata(context, uri)
-        transfers.value = transfers.value.map {
-            if (it.id == transfer.id) it.copy(state = TransferState.ACTIVE, error = null) else it
-        }
-        launchSend(transfer.id, peer, uri, meta.name, resumeFirst = true)
-    }
-
-    /** queued → active once a concurrency slot opens. */
     private fun markActive(id: String) {
         transfers.update { list ->
-            list.map { if (it.id == id && it.state == TransferState.QUEUED) it.copy(state = TransferState.ACTIVE) else it }
+            list.map { if (it.id == id && it.state != TransferState.ACTIVE && it.state != TransferState.COMPLETED) it.copy(state = TransferState.ACTIVE, error = null) else it }
         }
     }
 
-    /** Corrects totalBytes once the sender has measured the real stream length. */
-    private fun updateTotal(id: String, total: Long) {
-        transfers.update { list -> list.map { if (it.id == id) it.copy(totalBytes = total) else it } }
+    /** Cancels a transfer. Incoming: stops the pull (resumable). Outgoing: stops serving it. */
+    fun cancelTransfer(transfer: Transfer) {
+        if (transfer.direction == TransferDirection.INCOMING) {
+            pullJobs[transfer.id]?.cancel()
+        } else {
+            config.removeOutgoing(transfer.id)
+            finishTransfer(transfer.id, TransferState.INTERRUPTED, str(S.canceled, language.value))
+        }
+    }
+
+    /** Resumes a transfer. Incoming: re-queue the pull. Outgoing: re-arm serving. */
+    fun resumeTransfer(transfer: Transfer) {
+        if (transfer.direction == TransferDirection.INCOMING) {
+            transfers.update { list -> list.map { if (it.id == transfer.id) it.copy(state = TransferState.PENDING, error = null) else it } }
+            schedulePulls()
+        } else {
+            val uri = transfer.localPath
+            if (uri != null && transfer.sha256.isNotEmpty()) {
+                config.addOutgoing(transfer.id, OutgoingSource(uri, transfer.totalBytes, transfer.sha256))
+                transfers.update { list -> list.map { if (it.id == transfer.id) it.copy(state = TransferState.PENDING, error = null) else it } }
+            }
+        }
     }
 
     fun setSharedUris(uris: List<Uri>) { sharedUris.value = uris }
@@ -523,9 +599,8 @@ class AppController(private val context: Context) : ListenerEvents {
 
     /** Persist finished transfers only; in-flight ones are gone after a restart anyway. */
     private fun persistTransfers() {
-        store.saveTransfers(transfers.value.filterNot {
-            it.state == TransferState.ACTIVE || it.state == TransferState.QUEUED
-        })
+        // Persist the whole list — incoming pulls and outgoing offers must survive a restart.
+        store.saveTransfers(transfers.value)
     }
 
     val downloadFolderSet: Boolean get() = settings.value.downloadTreeUri != null

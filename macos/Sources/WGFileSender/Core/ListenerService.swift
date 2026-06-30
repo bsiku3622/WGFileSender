@@ -1,21 +1,21 @@
 import Foundation
-import CryptoKit
 
-/// Callbacks the listener fires up to the app/UI layer. Implementations hop to the
-/// main actor as needed; the listener itself stays off the main actor.
+/// Callbacks the listener fires up to the app/UI layer. Implementations hop to the main
+/// actor as needed; the listener itself stays off the main actor. All `@Sendable` because
+/// the streaming `/pull` handler runs on a background queue.
 struct ListenerEvents {
-    /// Show the accept prompt and await the user. Return the token THIS device issues
-    /// for the peer (stored as the peer's tokenIn), or nil if declined / timed out.
-    /// `address` is the resolved host:port to reach the initiator back.
-    var onPairRequest: (PairRequestBody, String) async -> String?
+    /// Show the accept prompt and await the user. Return the token THIS device issues for
+    /// the peer (stored as the peer's tokenIn), or nil if declined / timed out.
+    var onPairRequest: @Sendable (PairRequestBody, String) async -> String?
     /// Peer pushed the token we should use when sending to it (our tokenOut).
-    var onPairConfirm: (PairConfirmBody) -> Void
-    var onTransferStart: (Transfer) -> Void
-    var onTransferProgress: (String, Int64) -> Void
-    var onTransferFinish: (String, TransferState, String?, String?) -> Void   // id, state, error, savedPath
+    var onPairConfirm: @Sendable (PairConfirmBody) -> Void
+    /// Peer offered a batch manifest; we (the receiver) persist it and start pulling.
+    var onOffer: @Sendable (OfferBody, PeerDevice, String) -> Void   // manifest, sender peer, senderName
+    /// Bytes served so far for an outgoing file via /pull (sender-side progress).
+    var onPullProgress: @Sendable (String, Int64, Int64) -> Void     // fileId, sent, total
 }
 
-/// Owns the HTTP listener and routes requests per PROTOCOL.md.
+/// Owns the HTTP listener and routes requests per PROTOCOL.md (pull model).
 final class ListenerService {
     private let config: SharedConfig
     private let events: ListenerEvents
@@ -36,7 +36,6 @@ final class ListenerService {
     }
 
     func stop() { server?.stop(); server = nil }
-
     func restart() throws { stop(); try start() }
 
     // MARK: routing
@@ -47,23 +46,20 @@ final class ListenerService {
             let id = config.identity
             return .json(PingResponse(deviceId: id.deviceId, deviceName: id.deviceName,
                                       platform: id.platform, protocol: kProtocolVersion))
-
         case ("POST", "/pair/request"):
             return await handlePairRequest(body, remoteHost)
-
         case ("POST", "/pair/confirm"):
             return await handlePairConfirm(req, body)
-
-        case ("POST", "/send"):
-            return await handleSend(req, body)
-
-        case ("GET", "/send/status"):
-            return handleSendStatus(req)
-
+        case ("POST", "/offer"):
+            return await handleOffer(req, body)
+        case ("GET", "/pull"):
+            return handlePull(req)
         default:
             return .status(404)
         }
     }
+
+    // MARK: pairing
 
     private func handlePairRequest(_ body: BodyStream, _ remoteHost: String) async -> HTTPResponse {
         let data = await body.readAll()
@@ -72,7 +68,7 @@ final class ListenerService {
         }
         let address = "\(remoteHost):\(payload.port)"
         guard let issuedToken = await events.onPairRequest(payload, address) else {
-            return .status(403)   // declined or timed out
+            return .status(403)
         }
         let id = config.identity
         return .json(PairAcceptResponse(deviceId: id.deviceId, deviceName: id.deviceName,
@@ -87,159 +83,83 @@ final class ListenerService {
         guard let payload = try? JSONDecoder().decode(PairConfirmBody.self, from: data) else {
             return .status(400)
         }
-        // The caller may only confirm its own pairing — not overwrite another peer's tokenOut.
         guard peer.peerId == payload.deviceId else { return .status(403) }
         events.onPairConfirm(payload)
         return HTTPResponse(status: 204)
     }
 
-    private func handleSendStatus(_ req: HTTPRequest) -> HTTPResponse {
-        guard let token = req.bearerToken, config.peer(forToken: token) != nil,
-              let transferId = req.query["transferId"], Self.isSafeTransferId(transferId) else {
-            return .status(401)
-        }
-        let size = partFileSize(transferId: transferId)
-        return .json(SendStatusResponse(transferId: transferId, received: size))
-    }
+    // MARK: transfers (pull model)
 
-    private func handleSend(_ req: HTTPRequest, _ body: BodyStream) async -> HTTPResponse {
+    /// Receiver side: accept a batch manifest and let the app start pulling.
+    private func handleOffer(_ req: HTTPRequest, _ body: BodyStream) async -> HTTPResponse {
         guard let token = req.bearerToken, let peer = config.peer(forToken: token) else {
             return .status(401)
         }
-        guard let rawName = req.header("x-wgfs-file-name"),
-              let fileName = rawName.removingPercentEncoding,
-              let transferId = req.header("x-wgfs-transfer-id"),
-              Self.isSafeTransferId(transferId),
-              let expectedHash = req.header("x-wgfs-sha256") else {
+        let data = await body.readAll()
+        guard let offer = try? JSONDecoder().decode(OfferBody.self, from: data),
+              offer.files.count <= 10_000, !offer.batchId.isEmpty,
+              offer.files.allSatisfy({ Self.isSafeId($0.fileId) }) else {
             return .status(400)
         }
-        let totalBytes = Int64(req.header("x-wgfs-file-size") ?? "") ?? 0
         let senderName = req.header("x-wgfs-device-name") ?? peer.peerName
-        let folderName = peer.localName?.isEmpty == false ? peer.localName! : senderName
-
-        let fm = FileManager.default
-        let folder = URL(fileURLWithPath: config.settings.downloadRoot)
-            .appendingPathComponent(safeComponent(folderName), isDirectory: true)
-        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
-
-        let partURL = partURL(transferId: transferId)
-        try? fm.createDirectory(at: partURL.deletingLastPathComponent(),
-                                withIntermediateDirectories: true)
-
-        // Resume: a Content-Range start that matches the bytes already on disk means we
-        // append; anything else (or no range) starts the .part fresh.
-        let onDisk = partFileSize(transferId: transferId)
-        var startOffset: Int64 = 0
-        if let range = req.header("content-range"), let s = Self.rangeStart(range), s > 0, s == onDisk {
-            startOffset = s
-        }
-        if startOffset == 0 {
-            fm.createFile(atPath: partURL.path, contents: nil)
-        }
-        guard let handle = try? FileHandle(forWritingTo: partURL) else { return .status(500) }
-
-        // Prime the hasher with bytes already written, then position at the append point.
-        var hasher = SHA256()
-        if startOffset > 0, let rh = try? FileHandle(forReadingFrom: partURL) {
-            while case let d = rh.readData(ofLength: 1 << 20), !d.isEmpty { hasher.update(data: d) }
-            try? rh.close()
-            try? handle.seek(toOffset: UInt64(startOffset))
-        }
-
-        events.onTransferStart(Transfer(
-            id: transferId, direction: .incoming, peerName: peer.displayName,
-            fileName: fileName, totalBytes: totalBytes, transferredBytes: startOffset,
-            state: .active, startedAt: Date()))
-
-        var received = startOffset
-        var writeFailed = false
-        while let chunk = await body.read() {
-            do { try handle.write(contentsOf: chunk) }
-            catch { writeFailed = true; break }   // don't fold undelivered bytes into the hash
-            hasher.update(data: chunk)
-            received += Int64(chunk.count)
-            events.onTransferProgress(transferId, received)
-        }
-        try? handle.close()
-
-        // A disk/IO write error isn't a hash problem — keep the .part so it can be resumed,
-        // never deliver a short file with a (wrongly) matching digest.
-        if writeFailed {
-            events.onTransferFinish(transferId, .interrupted, L(.connectionLost, .current), nil)
-            return .status(500)
-        }
-
-        // Peer hung up before delivering the whole body — keep the .part for a later resume.
-        guard body.isComplete else {
-            events.onTransferFinish(transferId, .interrupted, L(.connectionLost, .current), nil)
-            return .status(400)
-        }
-
-        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        guard digest == expectedHash.lowercased() else {
-            try? fm.removeItem(at: partURL)   // a fully-received file that hashes wrong is corrupt
-            events.onTransferFinish(transferId, .failed, L(.checksumMismatch, .current), nil)
-            return .status(409)
-        }
-
-        let finalURL = uniqueURL(in: folder, fileName: fileName)
-        do {
-            try fm.moveItem(at: partURL, to: finalURL)
-        } catch {
-            // The bytes are fine but we couldn't place the file — don't claim success.
-            events.onTransferFinish(transferId, .failed, L(.saveFailed, .current), nil)
-            return .status(500)
-        }
-        events.onTransferFinish(transferId, .completed, nil, finalURL.path)
+        events.onOffer(offer, peer, senderName)
         return .status(200)
     }
 
-    /// Parses the start byte from a `bytes <start>-<end>/<total>` Content-Range header.
-    private static func rangeStart(_ header: String) -> Int64? {
-        let trimmed = header.lowercased().replacingOccurrences(of: "bytes ", with: "")
-        guard let dash = trimmed.firstIndex(of: "-") else { return nil }
-        return Int64(trimmed[trimmed.startIndex..<dash])
+    /// Sender side: stream a file's bytes (resumable via Range) for the peer to pull.
+    private func handlePull(_ req: HTTPRequest) -> HTTPResponse {
+        guard let token = req.bearerToken, config.peer(forToken: token) != nil else {
+            return .status(401)
+        }
+        guard let fileId = req.query["file"], Self.isSafeId(fileId),
+              let src = config.outgoingSource(fileId) else {
+            return .status(404)
+        }
+        guard FileManager.default.fileExists(atPath: src.path) else { return .status(410) }
+        let size = src.size
+        var start: Int64 = 0
+        if let range = req.header("range"), let s = Self.rangeBytesStart(range) { start = s }
+        guard start >= 0, start <= size else { return .status(416) }
+
+        let len = size - start
+        var headers = ["Content-Length": "\(len)", "Content-Type": "application/octet-stream"]
+        let status: Int
+        if start > 0 {
+            status = 206
+            headers["Content-Range"] = "bytes \(start)-\(size - 1)/\(size)"
+        } else {
+            status = 200
+        }
+        let path = src.path
+        let onProgress = events.onPullProgress
+        return HTTPResponse(status: status, headers: headers, stream: { sink in
+            guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return }
+            defer { try? handle.close() }
+            try? handle.seek(toOffset: UInt64(start))
+            var sent = start
+            var remaining = len
+            while remaining > 0 {
+                let chunk = handle.readData(ofLength: Int(min(1 << 20, remaining)))
+                if chunk.isEmpty { break }
+                await sink.write(chunk)
+                sent += Int64(chunk.count)
+                remaining -= Int64(chunk.count)
+                onProgress(fileId, sent, size)
+            }
+        })
     }
 
-    /// Transfer ids are used in file paths, so accept only UUID-shaped values (hex + hyphen)
-    /// — blocks `../` traversal via the X-WGFS-Transfer-Id header.
-    private static func isSafeTransferId(_ id: String) -> Bool {
+    // MARK: helpers
+
+    /// UUID-shaped ids only (hex + hyphen) — these index file paths on the receiver.
+    static func isSafeId(_ id: String) -> Bool {
         !id.isEmpty && id.count <= 64 && id.allSatisfy { $0.isHexDigit || $0 == "-" }
     }
 
-    // MARK: file helpers
-
-    private func partURL(transferId: String) -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("WGFileSender/parts", isDirectory: true)
-        return base.appendingPathComponent("\(transferId).part")
-    }
-
-    private func partFileSize(transferId: String) -> Int64 {
-        let url = partURL(transferId: transferId)
-        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return (attrs?[.size] as? Int64) ?? 0
-    }
-
-    private func safeComponent(_ name: String) -> String {
-        let cleaned = name.replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "..", with: "_")
-        return cleaned.isEmpty ? "Unknown" : cleaned
-    }
-
-    private func uniqueURL(in folder: URL, fileName: String) -> URL {
-        let fm = FileManager.default
-        let safe = safeComponent(fileName)
-        var candidate = folder.appendingPathComponent(safe)
-        guard fm.fileExists(atPath: candidate.path) else { return candidate }
-        let ext = (safe as NSString).pathExtension
-        let stem = (safe as NSString).deletingPathExtension
-        var n = 1
-        repeat {
-            let name = ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
-            candidate = folder.appendingPathComponent(name)
-            n += 1
-        } while fm.fileExists(atPath: candidate.path)
-        return candidate
+    /// Start byte of a `bytes=<start>-` Range header.
+    private static func rangeBytesStart(_ header: String) -> Int64? {
+        let s = header.lowercased().replacingOccurrences(of: "bytes=", with: "")
+        let part = s.split(separator: "-", maxSplits: 1).first.map(String.init) ?? s
+        return Int64(part.trimmingCharacters(in: .whitespaces))
     }
 }

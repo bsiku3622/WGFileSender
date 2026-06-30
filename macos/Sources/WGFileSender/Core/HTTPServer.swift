@@ -17,6 +17,9 @@ struct HTTPResponse {
     var status: Int
     var headers: [String: String] = [:]
     var body: Data = Data()
+    /// When set, the body is produced by streaming through the sink instead of `body`.
+    /// The handler must set `Content-Length` (and `Content-Range` for 206) in `headers`.
+    var stream: (@Sendable (StreamSink) async -> Void)? = nil
 
     static func status(_ code: Int) -> HTTPResponse { HTTPResponse(status: code) }
 
@@ -71,6 +74,18 @@ final class BodyStream: @unchecked Sendable {
         var out = Data()
         while let chunk = await read() { out.append(chunk) }
         return out
+    }
+}
+
+/// Lets a handler stream a response body chunk-by-chunk (e.g. a large file for /pull)
+/// without buffering it in memory.
+final class StreamSink: @unchecked Sendable {
+    private let connection: NWConnection
+    init(_ connection: NWConnection) { self.connection = connection }
+    func write(_ data: Data) async {
+        await withCheckedContinuation { cont in
+            connection.send(content: data, completion: .contentProcessed { _ in cont.resume() })
+        }
     }
 }
 
@@ -134,16 +149,17 @@ final class HTTPServer {
 
     private func send(_ conn: NWConnection, _ resp: HTTPResponse) async {
         var headers = resp.headers
-        headers["Content-Length"] = String(resp.body.count)
+        if resp.stream == nil { headers["Content-Length"] = String(resp.body.count) }
         headers["Connection"] = "close"
         var head = "HTTP/1.1 \(resp.status) \(Self.reason(resp.status))\r\n"
         for (k, v) in headers { head += "\(k): \(v)\r\n" }
         head += "\r\n"
         var out = Data(head.utf8)
-        out.append(resp.body)
+        if resp.stream == nil { out.append(resp.body) }
         await withCheckedContinuation { cont in
             conn.send(content: out, completion: .contentProcessed { _ in cont.resume() })
         }
+        if let stream = resp.stream { await stream(StreamSink(conn)) }
     }
 
     // MARK: parsing
@@ -196,11 +212,14 @@ final class HTTPServer {
         switch code {
         case 200: return "OK"
         case 204: return "No Content"
+        case 206: return "Partial Content"
         case 400: return "Bad Request"
         case 401: return "Unauthorized"
         case 403: return "Forbidden"
         case 404: return "Not Found"
         case 409: return "Conflict"
+        case 410: return "Gone"
+        case 416: return "Range Not Satisfiable"
         case 431: return "Request Header Fields Too Large"
         default: return "Error"
         }

@@ -3,7 +3,7 @@ import SwiftUI
 enum Theme {
     static func color(for state: TransferState) -> Color {
         switch state {
-        case .queued: return .secondary
+        case .pending, .queued: return .secondary
         case .active: return .accentColor
         case .completed: return .green
         case .interrupted: return .yellow

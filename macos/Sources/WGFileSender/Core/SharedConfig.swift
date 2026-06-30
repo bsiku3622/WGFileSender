@@ -1,5 +1,12 @@
 import Foundation
 
+/// A file this device is offering to a peer, looked up by fileId when serving `/pull`.
+struct OutgoingSource: Sendable {
+    let path: String
+    let size: Int64
+    let sha256: String
+}
+
 /// Thread-safe snapshot of config the networking layer reads from background queues.
 /// AppState (main actor) writes; the listener reads. Kept separate so the network
 /// path never has to hop to the main actor just to look up a peer or the download root.
@@ -8,6 +15,7 @@ final class SharedConfig: @unchecked Sendable {
     private var _identity: Identity
     private var _peers: [PeerDevice]
     private var _settings: Store.Settings
+    private var _outgoing: [String: OutgoingSource] = [:]   // fileId -> source the peer can pull
 
     init(identity: Identity, peers: [PeerDevice], settings: Store.Settings) {
         _identity = identity
@@ -37,4 +45,10 @@ final class SharedConfig: @unchecked Sendable {
     func peer(forId id: String) -> PeerDevice? {
         sync { _peers.first { $0.peerId == id } }
     }
+
+    // MARK: outgoing sources (for serving /pull)
+
+    func outgoingSource(_ fileId: String) -> OutgoingSource? { sync { _outgoing[fileId] } }
+    func addOutgoing(_ fileId: String, _ source: OutgoingSource) { sync { _outgoing[fileId] = source } }
+    func removeOutgoing(_ fileId: String) { sync { _outgoing.removeValue(forKey: fileId) } }
 }

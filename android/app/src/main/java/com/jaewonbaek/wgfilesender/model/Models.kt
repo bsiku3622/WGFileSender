@@ -2,7 +2,7 @@ package com.jaewonbaek.wgfilesender.model
 
 import kotlinx.serialization.Serializable
 
-const val PROTOCOL_VERSION = 1
+const val PROTOCOL_VERSION = 2
 const val DEFAULT_PORT = 51900
 
 // MARK: wire payloads (mirror PROTOCOL.md)
@@ -40,9 +40,17 @@ data class PairConfirmBody(
 )
 
 @Serializable
-data class SendStatusResponse(
-    val transferId: String,
-    val received: Long
+data class OfferFile(
+    val fileId: String,
+    val name: String,
+    val size: Long,
+    val sha256: String
+)
+
+@Serializable
+data class OfferBody(
+    val batchId: String,
+    val files: List<OfferFile>
 )
 
 // MARK: domain / persisted
@@ -78,20 +86,23 @@ data class Settings(
 enum class TransferDirection { INCOMING, OUTGOING }
 
 @Serializable
-enum class TransferState { QUEUED, ACTIVE, COMPLETED, FAILED, INTERRUPTED }
+enum class TransferState { PENDING, QUEUED, ACTIVE, COMPLETED, FAILED, INTERRUPTED }
 
 @Serializable
 data class Transfer(
-    val id: String,
+    val id: String,                 // fileId
+    val batchId: String = "",
     val direction: TransferDirection,
     val peerName: String,
+    val peerId: String = "",
+    val peerAddress: String = "",   // receiver pulls the bytes from here
     val fileName: String,
     val totalBytes: Long,
     val transferredBytes: Long = 0,
-    val state: TransferState = TransferState.ACTIVE,
+    val sha256: String = "",
+    val state: TransferState = TransferState.PENDING,
     val error: String? = null,
-    val localPath: String? = null,  // content uri of the sent source / received file
-    val peerId: String = ""         // for resending an outgoing transfer
+    val localPath: String? = null   // sender: source content-uri; receiver: saved uri
 ) {
     val progress: Float
         get() = if (totalBytes > 0) (transferredBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f

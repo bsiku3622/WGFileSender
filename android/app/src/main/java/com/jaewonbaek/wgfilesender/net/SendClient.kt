@@ -2,13 +2,16 @@ package com.jaewonbaek.wgfilesender.net
 
 import android.content.Context
 import android.net.Uri
+import android.webkit.MimeTypeMap
+import androidx.documentfile.provider.DocumentFile
 import com.jaewonbaek.wgfilesender.data.SharedConfig
+import com.jaewonbaek.wgfilesender.model.OfferBody
+import com.jaewonbaek.wgfilesender.model.OfferFile
 import com.jaewonbaek.wgfilesender.model.PairAcceptResponse
 import com.jaewonbaek.wgfilesender.model.PairConfirmBody
 import com.jaewonbaek.wgfilesender.model.PairRequestBody
 import com.jaewonbaek.wgfilesender.model.PeerDevice
 import com.jaewonbaek.wgfilesender.model.PingResponse
-import com.jaewonbaek.wgfilesender.model.SendStatusResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
@@ -16,26 +19,31 @@ import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
-import io.ktor.http.content.OutgoingContent
-import io.ktor.utils.io.ByteWriteChannel
-import io.ktor.utils.io.writeFully
+import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.InputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.security.MessageDigest
 
-/** Outbound side: probes, pairing handshake, and streaming uploads. */
+class PullIncompleteException : Exception("Connection ended early")
+class ChecksumException : Exception("Checksum mismatch")
+
+/** Outbound side: probes, pairing, announcing a manifest (/offer), and — as the receiver —
+ *  pulling file bytes (/pull) with resume + hash verification. */
 class SendClient(private val context: Context, private val config: SharedConfig) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-    // No global request timeout (uploads can be large); pairing sets its own per-request.
-    private val client = HttpClient(CIO) {
-        install(HttpTimeout)
-    }
+    private val client = HttpClient(CIO) { install(HttpTimeout) }
 
     suspend fun ping(address: String): PingResponse {
         val resp = client.get("http://$address/ping")
@@ -49,7 +57,7 @@ class SendClient(private val context: Context, private val config: SharedConfig)
         val resp = client.post("http://$address/pair/request") {
             contentType(ContentType.Application.Json)
             setBody(json.encodeToString(body))
-            timeout { requestTimeoutMillis = 90_000 }  // waits for the human to accept
+            timeout { requestTimeoutMillis = 90_000 }
         }
         if (resp.status.value == 403) throw PairDeclinedException()
         check(resp.status.value == 200) { "pair ${resp.status.value}" }
@@ -66,87 +74,23 @@ class SendClient(private val context: Context, private val config: SharedConfig)
         check(resp.status.value == 204) { "confirm ${resp.status.value}" }
     }
 
-    suspend fun sendFile(
-        peer: PeerDevice,
-        uri: Uri,
-        fileName: String,
-        transferId: String,
-        tryResume: Boolean = false,
-        onSize: (Long) -> Unit = {},
-        onProgress: (Long) -> Unit
-    ) {
-        // Trust the stream, not the SAF/MediaStore metadata: hash and measure in one pass so
-        // Content-Length always matches the bytes the hash covers (a wrong reported size was
-        // truncating receives and failing every checksum).
-        val (hash, actualSize) = hashAndSize(uri)
-        onSize(actualSize)
+    // MARK: sender — announce a batch manifest
+
+    suspend fun offer(peer: PeerDevice, batchId: String, files: List<OfferFile>) {
         val id = config.identity
-        val resolver = context.contentResolver
-
-        // On a resume attempt, ask the receiver how many bytes it already holds and send
-        // only the remainder. First-time sends skip the round-trip and stream the whole file.
-        var offset = 0L
-        if (tryResume) {
-            val have = runCatching { sendStatus(peer, transferId) }.getOrDefault(0L)
-            if (have in 1 until actualSize) offset = have
-        }
-
-        val content = object : OutgoingContent.WriteChannelContent() {
-            override val contentLength: Long = actualSize - offset
-            override suspend fun writeTo(channel: ByteWriteChannel) {
-                val buf = ByteArray(1 shl 16)
-                var sent = offset
-                resolver.openInputStream(uri)?.use { input ->
-                    if (offset > 0) skipFully(input, offset)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        channel.writeFully(buf, 0, n)
-                        sent += n
-                        onProgress(sent)
-                    }
-                }
-            }
-        }
-
-        val resp = client.post("http://${peer.peerAddress}/send") {
+        val resp = client.post("http://${peer.peerAddress}/offer") {
             header(HttpHeaders.Authorization, "Bearer ${peer.tokenOut}")
             header("X-WGFS-Device-Id", id.deviceId)
             header("X-WGFS-Device-Name", id.deviceName)
-            header("X-WGFS-File-Name", Uri.encode(fileName))
-            header("X-WGFS-File-Size", actualSize.toString())
-            header("X-WGFS-Sha256", hash)
-            header("X-WGFS-Transfer-Id", transferId)
-            if (offset > 0) header("Content-Range", "bytes $offset-${actualSize - 1}/$actualSize")
-            setBody(content)
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(OfferBody(batchId, files)))
+            timeout { requestTimeoutMillis = 30_000 }
         }
-        check(resp.status.value == 200) { "send ${resp.status.value}" }
+        check(resp.status.value == 200) { "offer ${resp.status.value}" }
     }
 
-    /** Bytes the receiver already has for this transfer (0 if none / unreachable). */
-    private suspend fun sendStatus(peer: PeerDevice, transferId: String): Long {
-        val resp = client.get("http://${peer.peerAddress}/send/status?transferId=$transferId") {
-            header(HttpHeaders.Authorization, "Bearer ${peer.tokenOut}")
-            timeout { requestTimeoutMillis = 15_000 }
-        }
-        if (resp.status.value != 200) return 0L
-        return json.decodeFromString<SendStatusResponse>(resp.bodyAsText()).received
-    }
-
-    /** Discards `n` bytes from the stream (ContentResolver streams don't reliably skip()). */
-    private fun skipFully(input: InputStream, n: Long) {
-        var remaining = n
-        val buf = ByteArray(1 shl 16)
-        while (remaining > 0) {
-            val toRead = minOf(remaining, buf.size.toLong()).toInt()
-            val r = input.read(buf, 0, toRead)
-            if (r < 0) break
-            remaining -= r
-        }
-    }
-
-    /** Hashes and measures the stream in one pass so both describe the exact same bytes. */
-    private fun hashAndSize(uri: Uri): Pair<String, Long> {
+    /** Hashes and measures a content-uri in one pass (for building the manifest). */
+    fun hashAndSize(uri: Uri): Pair<String, Long> {
         val md = MessageDigest.getInstance("SHA-256")
         var total = 0L
         context.contentResolver.openInputStream(uri)?.use { input ->
@@ -159,5 +103,82 @@ class SendClient(private val context: Context, private val config: SharedConfig)
             }
         }
         return md.digest().joinToString("") { "%02x".format(it) } to total
+    }
+
+    // MARK: receiver — pull a file's bytes, resuming and verifying
+
+    /** Pulls (or resumes) one file into the SAF tree and returns the saved uri. Throws
+     *  [PullIncompleteException] (keep .part, retry) or [ChecksumException] (corrupt). */
+    suspend fun pullFile(
+        peer: PeerDevice, batchId: String, fileId: String, fileName: String,
+        expectedSize: Long, expectedHash: String, senderFolder: String,
+        onProgress: (Long) -> Unit
+    ): String {
+        val part = File(context.cacheDir, "$fileId.part")
+        val start = if (part.exists()) part.length() else 0L
+
+        if (start < expectedSize || start == 0L) {
+            client.prepareGet("http://${peer.peerAddress}/pull?batch=$batchId&file=$fileId") {
+                if (start > 0) header(HttpHeaders.Range, "bytes=$start-")
+            }.execute { resp ->
+                if (resp.status.value !in 200..299) throw IOException("pull ${resp.status.value}")
+                val channel = resp.bodyAsChannel()
+                withContext(Dispatchers.IO) {
+                    FileOutputStream(part, /* append = */ start > 0L).use { out ->
+                        val buf = ByteArray(1 shl 16)
+                        var received = start
+                        while (true) {
+                            val n = channel.readAvailable(buf, 0, buf.size)
+                            if (n == -1) break
+                            if (n > 0) {
+                                out.write(buf, 0, n)
+                                received += n
+                                onProgress(received)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (part.length() < expectedSize) throw PullIncompleteException()
+        val digest = sha256(part)
+        if (digest != expectedHash.lowercase()) {
+            part.delete()   // corrupt — start over next round
+            throw ChecksumException()
+        }
+        val saved = saveToTree(senderFolder, fileName, part)
+            ?: throw IOException("no download folder")
+        part.delete()
+        return saved
+    }
+
+    private fun saveToTree(folderName: String, fileName: String, source: File): String? {
+        val treeUriStr = config.settings.downloadTreeUri ?: return null
+        val tree = DocumentFile.fromTreeUri(context, Uri.parse(treeUriStr)) ?: return null
+        val safeFolder = folderName.replace('/', '_').ifBlank { "Unknown" }
+        val folder = tree.findFile(safeFolder)?.takeIf { it.isDirectory }
+            ?: tree.createDirectory(safeFolder) ?: return null
+        val safeName = fileName.replace('/', '_').replace("..", "_").ifBlank { "file" }
+        val ext = safeName.substringAfterLast('.', "")
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.lowercase())
+            ?: "application/octet-stream"
+        val target = folder.createFile(mime, safeName) ?: return null
+        val out = context.contentResolver.openOutputStream(target.uri) ?: return null
+        out.use { o -> source.inputStream().use { it.copyTo(o) } }
+        return target.uri.toString()
+    }
+
+    private fun sha256(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(1 shl 16)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 }
