@@ -114,10 +114,10 @@ struct SettingsView: View {
                 if !info.releaseNotes.isEmpty {
                     Text(L(.whatsNew, lang)).font(.caption).foregroundStyle(.secondary)
                     ScrollView {
-                        Text(info.releaseNotes).font(.caption)
+                        MarkdownView(text: info.releaseNotes)
                             .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                     }
-                    .frame(maxHeight: 120)
+                    .frame(maxHeight: 160)
                 }
                 HStack {
                     Button(L(.downloadUpdate, lang)) { state.downloadUpdate() }

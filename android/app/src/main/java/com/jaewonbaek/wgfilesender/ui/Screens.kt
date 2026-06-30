@@ -62,6 +62,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -280,6 +283,39 @@ private fun TransfersSummary(transfers: List<Transfer>) {
             if (stopped > 0) StatChip(t(S.interrupted), stopped, Shad.sent)
         }
     }
+}
+
+/** Tiny markdown renderer for release notes: headers, bullets, and bold inline. */
+@Composable
+private fun MarkdownText(text: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        text.split("\n").forEach { line ->
+            when {
+                line.startsWith("## ") ->
+                    Text(inlineMd(line.drop(3)), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                line.startsWith("# ") ->
+                    Text(inlineMd(line.drop(2)), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                line.startsWith("- ") || line.startsWith("* ") ->
+                    Row {
+                        Text("•  ", fontSize = 12.sp, color = Shad.mutedForeground)
+                        Text(inlineMd(line.drop(2)), fontSize = 12.sp)
+                    }
+                line.isBlank() -> Spacer(Modifier.height(2.dp))
+                else -> Text(inlineMd(line), fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
+    val regex = Regex("""\*\*(.+?)\*\*""")
+    var last = 0
+    for (m in regex.findAll(s)) {
+        append(s.substring(last, m.range.first))
+        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(m.groupValues[1]) }
+        last = m.range.last + 1
+    }
+    if (last < s.length) append(s.substring(last))
 }
 
 @Composable
@@ -558,7 +594,8 @@ private fun UpdateCard(controller: AppController) {
                     if (s.info.releaseNotes.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
                         Text(t(S.whatsNew), color = Shad.mutedForeground, fontSize = 12.sp)
-                        Text(s.info.releaseNotes, fontSize = 12.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(4.dp))
+                        MarkdownText(s.info.releaseNotes)
                     }
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
