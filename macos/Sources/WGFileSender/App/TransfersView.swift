@@ -49,17 +49,28 @@ struct TransfersView: View {
     /// At-a-glance counts (and completed volume) across the transfer list.
     @ViewBuilder private var summaryBar: some View {
         let t = state.transfers
+        let total = t.count
         let active = t.filter { $0.state == .active }.count
-        let queued = t.filter { $0.state == .queued }.count
+        let waiting = t.filter { $0.state == .pending || $0.state == .queued }.count
         let done = t.filter { $0.state == .completed }
-        let failed = t.filter { $0.state == .failed || $0.state == .interrupted }.count
+        let failed = t.filter { $0.state == .failed }.count
+        let stopped = t.filter { $0.state == .interrupted }.count
         let doneBytes = done.reduce(Int64(0)) { $0 + $1.totalBytes }
-        HStack(spacing: 16) {
-            if active > 0 { stat(L(.statActive, lang), active, .accentColor) }
-            if queued > 0 { stat(L(.queued, lang), queued, .secondary) }
-            stat(L(.statDone, lang), done.count, .green, detail: done.isEmpty ? nil : doneBytes.humanBytes)
-            if failed > 0 { stat(L(.failed, lang), failed, .red) }
-            Spacer()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(L(.transferProgress, lang)).font(.caption).fontWeight(.semibold)
+                Spacer()
+                Text("\(done.count) / \(total)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+            ProgressView(value: total > 0 ? Double(done.count) / Double(total) : 0).tint(.green)
+            HStack(spacing: 16) {
+                if active > 0 { stat(L(.statActive, lang), active, .accentColor) }
+                if waiting > 0 { stat(L(.queued, lang), waiting, .secondary) }
+                if !done.isEmpty { stat(L(.statDone, lang), done.count, .green, detail: doneBytes.humanBytes) }
+                if failed > 0 { stat(L(.failed, lang), failed, .red) }
+                if stopped > 0 { stat(L(.interrupted, lang), stopped, .yellow) }
+                Spacer()
+            }
         }
     }
 

@@ -11,6 +11,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -242,19 +244,40 @@ private fun TransfersScreen(controller: AppController) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TransfersSummary(transfers: List<Transfer>) {
+    val total = transfers.size
     val active = transfers.count { it.state == TransferState.ACTIVE }
-    val queued = transfers.count { it.state == TransferState.QUEUED }
+    val waiting = transfers.count { it.state == TransferState.PENDING || it.state == TransferState.QUEUED }
     val done = transfers.filter { it.state == TransferState.COMPLETED }
-    val failed = transfers.count { it.state == TransferState.FAILED || it.state == TransferState.INTERRUPTED }
+    val failed = transfers.count { it.state == TransferState.FAILED }
+    val stopped = transfers.count { it.state == TransferState.INTERRUPTED }
     val doneBytes = done.sumOf { it.totalBytes }
+
     ShadCard {
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(t(S.transferProgress), fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                modifier = Modifier.weight(1f))
+            Text("${done.size} / $total", fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace, color = Shad.mutedForeground)
+        }
+        Spacer(Modifier.height(8.dp))
+        LinearProgressIndicator(
+            progress = { if (total > 0) done.size.toFloat() / total else 0f },
+            color = Shad.received, trackColor = Shad.muted,
+            modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape)
+        )
+        Spacer(Modifier.height(12.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             if (active > 0) StatChip(t(S.statActive), active, Shad.accent)
-            if (queued > 0) StatChip(t(S.queued), queued, Shad.mutedForeground)
-            StatChip(t(S.statDone), done.size, Shad.received, if (done.isEmpty()) null else doneBytes.humanBytes())
+            if (waiting > 0) StatChip(t(S.queued), waiting, Shad.mutedForeground)
+            if (done.isNotEmpty()) StatChip(t(S.statDone), done.size, Shad.received, doneBytes.humanBytes())
             if (failed > 0) StatChip(t(S.failed), failed, Shad.destructive)
+            if (stopped > 0) StatChip(t(S.interrupted), stopped, Shad.sent)
         }
     }
 }
