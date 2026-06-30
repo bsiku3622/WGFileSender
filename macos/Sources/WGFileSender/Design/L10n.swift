@@ -45,7 +45,7 @@ enum LKey {
     case statActive, statDone, saveFailed, myAddress, copy, transferProgress
     case updates, currentVersion, checkForUpdates, checkingForUpdates, upToDate
     case updateAvailable, whatsNew, downloadUpdate, downloadingUpdate, openToInstall
-    case updateDownloadedHint, updateCheckFailed, retry, later
+    case updateDownloadedHint, updateCheckFailed, retry, later, installAndRestart
 }
 
 /// Localized string. Views pass an @AppStorage-tracked `lang` so they re-render on change.
@@ -156,9 +156,10 @@ func L(_ key: LKey, _ lang: Lang = .current) -> String {
     case .downloadUpdate:     return ko ? "다운로드" : "Download"
     case .downloadingUpdate:  return ko ? "다운로드 중…" : "Downloading…"
     case .openToInstall:      return ko ? "열어서 설치" : "Open to Install"
+    case .installAndRestart:  return ko ? "설치 후 재시작" : "Install & Restart"
     case .updateDownloadedHint:
-        return ko ? "다운로드한 파일을 열어 앱을 새 버전으로 교체하세요."
-                  : "Open the downloaded file to replace the app with the new version."
+        return ko ? "설치하면 앱이 새 버전으로 교체된 뒤 자동으로 재시작됩니다."
+                  : "Installs the update and restarts the app automatically."
     case .updateCheckFailed:  return ko ? "확인 실패: %@" : "Check failed: %@"
     case .retry:              return ko ? "다시 시도" : "Retry"
     case .later:              return ko ? "나중에" : "Later"
