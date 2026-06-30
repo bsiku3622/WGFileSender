@@ -134,7 +134,7 @@ struct SettingsView: View {
         case .downloaded:
             VStack(alignment: .leading, spacing: 8) {
                 Text(L(.updateDownloadedHint, lang)).font(.caption).foregroundStyle(.secondary)
-                Button(L(.openToInstall, lang)) { state.revealUpdate() }
+                Button(L(.installAndRestart, lang)) { state.installUpdate() }
                     .buttonStyle(.borderedProminent)
             }
         case .failed(let msg):

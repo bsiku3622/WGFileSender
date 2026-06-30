@@ -117,8 +117,7 @@ final class ListenerService {
         }
         guard FileManager.default.fileExists(atPath: src.path) else { return .status(410) }
         let size = src.size
-        var start: Int64 = 0
-        if let range = req.header("range"), let s = Self.rangeBytesStart(range) { start = s }
+        let start: Int64 = req.header("range").flatMap { Self.rangeBytesStart($0) } ?? 0
         guard start >= 0, start <= size else { return .status(416) }
 
         let len = size - start
